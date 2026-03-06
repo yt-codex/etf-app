@@ -233,9 +233,31 @@ def venue_scope(arg: str) -> list[str]:
     return ["XLON", "XETR"]
 
 
+def product_profile_exists(conn: sqlite3.Connection) -> bool:
+    row = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='product_profile'"
+    ).fetchone()
+    return row is not None
+
+
 def load_targets(conn: sqlite3.Connection, limit: int, venue: str) -> list[sqlite3.Row]:
     venues = venue_scope(venue)
     placeholders = ",".join("?" for _ in venues)
+    profile_join = ""
+    profile_filter = "AND icc.ongoing_charges IS NULL"
+    if product_profile_exists(conn):
+        profile_join = "LEFT JOIN product_profile p ON p.instrument_id = i.instrument_id"
+        profile_filter = """
+          AND (
+              icc.ongoing_charges IS NULL
+              OR p.instrument_id IS NULL
+              OR p.benchmark_name IS NULL OR TRIM(p.benchmark_name) = ''
+              OR p.asset_class_hint IS NULL OR TRIM(p.asset_class_hint) = ''
+              OR p.domicile_country IS NULL OR TRIM(p.domicile_country) = ''
+              OR p.replication_method IS NULL OR TRIM(p.replication_method) = ''
+              OR p.hedged_flag IS NULL
+          )
+        """
     sql = f"""
         SELECT
             i.instrument_id,
@@ -248,13 +270,14 @@ def load_targets(conn: sqlite3.Connection, limit: int, venue: str) -> list[sqlit
         JOIN listing l ON l.instrument_id = i.instrument_id AND l.primary_flag = 1
         LEFT JOIN issuer iss ON iss.issuer_id = i.issuer_id
         LEFT JOIN instrument_cost_current icc ON icc.instrument_id = i.instrument_id
+        {profile_join}
         WHERE i.universe_mvp_flag = 1
           AND l.venue_mic IN ({placeholders})
           AND (
               UPPER(COALESCE(iss.normalized_name, '')) LIKE '%ISHARES%'
               OR UPPER(i.instrument_name) LIKE '%ISHARES%'
           )
-          AND icc.ongoing_charges IS NULL
+          {profile_filter}
         ORDER BY i.isin
         LIMIT ?
     """
@@ -807,6 +830,7 @@ def insert_cost_snapshot_from_ter(
     source_url: str,
     use_of_income: Optional[str],
     ucits_compliant: Optional[int],
+    profile_metadata: Optional[dict[str, object]] = None,
 ) -> None:
     raw_json = {
         "source": ISHARES_SOURCE,
@@ -815,6 +839,10 @@ def insert_cost_snapshot_from_ter(
         "use_of_income": use_of_income,
         "ucits_compliant": ucits_compliant,
     }
+    if profile_metadata:
+        raw_json["profile_metadata"] = {
+            key: value for key, value in profile_metadata.items() if value is not None
+        }
     conn.execute(
         """
         INSERT INTO cost_snapshot(
@@ -1043,6 +1071,14 @@ def main(argv: list[str]) -> int:
                     source_url=product_url,
                     use_of_income=use_of_income,
                     ucits_compliant=ucits_compliant,
+                    profile_metadata={
+                        "benchmark_name": parsed_payload.get("benchmark_name"),
+                        "asset_class_hint": parsed_payload.get("asset_class_hint"),
+                        "domicile_country": parsed_payload.get("domicile_country"),
+                        "replication_method": parsed_payload.get("replication_method"),
+                        "hedged_flag": parsed_payload.get("hedged_flag"),
+                        "hedged_target": parsed_payload.get("hedged_target"),
+                    },
                 )
                 filled += 1
                 if len(sample_rows) < 20:

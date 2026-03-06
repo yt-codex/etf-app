@@ -1003,6 +1003,24 @@ def ensure_tables_and_view(conn: sqlite3.Connection) -> None:
 def load_targets(conn: sqlite3.Connection, limit: int, venue: str) -> list[sqlite3.Row]:
     venues = venue_scope(venue)
     placeholders = ",".join("?" for _ in venues)
+    profile_join = ""
+    profile_filter = "AND icc.ongoing_charges IS NULL"
+    row = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='product_profile'"
+    ).fetchone()
+    if row is not None:
+        profile_join = "LEFT JOIN product_profile p ON p.instrument_id = i.instrument_id"
+        profile_filter = """
+          AND (
+              icc.ongoing_charges IS NULL
+              OR p.instrument_id IS NULL
+              OR p.benchmark_name IS NULL OR TRIM(p.benchmark_name) = ''
+              OR p.asset_class_hint IS NULL OR TRIM(p.asset_class_hint) = ''
+              OR p.domicile_country IS NULL OR TRIM(p.domicile_country) = ''
+              OR p.replication_method IS NULL OR TRIM(p.replication_method) = ''
+              OR p.hedged_flag IS NULL
+          )
+        """
     sql = f"""
         SELECT
             i.instrument_id,
@@ -1017,9 +1035,10 @@ def load_targets(conn: sqlite3.Connection, limit: int, venue: str) -> list[sqlit
          AND l.primary_flag = 1
         LEFT JOIN issuer iss ON iss.issuer_id = i.issuer_id
         LEFT JOIN instrument_cost_current icc ON icc.instrument_id = i.instrument_id
+        {profile_join}
         WHERE i.universe_mvp_flag = 1
           AND l.venue_mic IN ({placeholders})
-          AND icc.ongoing_charges IS NULL
+          {profile_filter}
           AND (
               UPPER(COALESCE(iss.normalized_name, '')) LIKE '%AMUNDI%'
               OR UPPER(i.instrument_name) LIKE '%AMUNDI%'
@@ -1153,6 +1172,7 @@ def insert_cost_snapshot_from_ter(
     source_url: str,
     use_of_income: Optional[str],
     ucits_compliant: Optional[int],
+    profile_metadata: Optional[dict[str, object]] = None,
 ) -> None:
     raw_json = {
         "source": AMUNDI_SOURCE,
@@ -1161,6 +1181,10 @@ def insert_cost_snapshot_from_ter(
         "use_of_income": use_of_income,
         "ucits_compliant": ucits_compliant,
     }
+    if profile_metadata:
+        raw_json["profile_metadata"] = {
+            key: value for key, value in profile_metadata.items() if value is not None
+        }
     conn.execute(
         """
         INSERT INTO cost_snapshot(
@@ -1484,6 +1508,14 @@ def main(argv: list[str]) -> int:
                     source_url=cost_source_url or final_url,
                     use_of_income=use_of_income,
                     ucits_compliant=ucits_compliant,
+                    profile_metadata={
+                        "benchmark_name": merged_parse.get("benchmark_name"),
+                        "asset_class_hint": merged_parse.get("asset_class_hint"),
+                        "domicile_country": merged_parse.get("domicile_country"),
+                        "replication_method": merged_parse.get("replication_method"),
+                        "hedged_flag": merged_parse.get("hedged_flag"),
+                        "hedged_target": merged_parse.get("hedged_target"),
+                    },
                 )
                 filled += 1
                 if len(sample_rows) < 20:
