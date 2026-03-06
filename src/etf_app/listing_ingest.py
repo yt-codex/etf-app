@@ -63,6 +63,7 @@ class SourceStats:
     instrument_updated: int = 0
     listing_inserted: int = 0
     listing_updated: int = 0
+    listing_reactivated: int = 0
     listing_deactivated: int = 0
     instrument_deactivated: int = 0
     instrument_reactivated: int = 0
@@ -234,7 +235,36 @@ class IngestDB:
                 FOREIGN KEY (run_id) REFERENCES source_run(run_id),
                 FOREIGN KEY (instrument_id) REFERENCES instrument(instrument_id)
             );
+
+            CREATE TABLE IF NOT EXISTS lifecycle_event (
+                event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id INTEGER NULL,
+                entity_type TEXT NOT NULL,
+                instrument_id INTEGER NOT NULL,
+                listing_id INTEGER NULL,
+                venue_mic TEXT NULL,
+                ticker TEXT NULL,
+                data_source TEXT NULL,
+                previous_status TEXT NULL,
+                new_status TEXT NOT NULL,
+                event_type TEXT NOT NULL,
+                asof_date TEXT NULL,
+                created_at TEXT NOT NULL,
+                details_json TEXT NULL,
+                FOREIGN KEY (run_id) REFERENCES source_run(run_id),
+                FOREIGN KEY (instrument_id) REFERENCES instrument(instrument_id),
+                FOREIGN KEY (listing_id) REFERENCES listing(listing_id)
+            );
             """
+        )
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_lifecycle_event_run_id ON lifecycle_event(run_id)"
+        )
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_lifecycle_event_instrument ON lifecycle_event(instrument_id)"
+        )
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_lifecycle_event_entity ON lifecycle_event(entity_type, event_type)"
         )
         self.conn.commit()
 
@@ -271,12 +301,63 @@ class IngestDB:
             (run_id, data_source, venue_mic, instrument_id, ticker),
         )
 
-    def reconcile_source_state(self, *, run_id: int, data_source: str, asof_date: str) -> dict[str, int]:
-        listing_deactivated = self.conn.execute(
+    def record_lifecycle_event(
+        self,
+        *,
+        run_id: Optional[int],
+        entity_type: str,
+        instrument_id: int,
+        listing_id: Optional[int],
+        venue_mic: Optional[str],
+        ticker: Optional[str],
+        data_source: Optional[str],
+        previous_status: Optional[str],
+        new_status: str,
+        event_type: str,
+        asof_date: Optional[str],
+        details: Optional[dict[str, object]] = None,
+    ) -> None:
+        details_json = json.dumps(details, ensure_ascii=True) if details is not None else None
+        self.conn.execute(
             """
-            UPDATE listing
-            SET status = 'inactive',
-                asof_date = ?
+            INSERT INTO lifecycle_event(
+                run_id,
+                entity_type,
+                instrument_id,
+                listing_id,
+                venue_mic,
+                ticker,
+                data_source,
+                previous_status,
+                new_status,
+                event_type,
+                asof_date,
+                created_at,
+                details_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                run_id,
+                entity_type,
+                instrument_id,
+                listing_id,
+                venue_mic,
+                ticker,
+                data_source,
+                previous_status,
+                new_status,
+                event_type,
+                asof_date,
+                now_utc_iso(),
+                details_json,
+            ),
+        )
+
+    def reconcile_source_state(self, *, run_id: int, data_source: str, asof_date: str) -> dict[str, int]:
+        listing_rows_to_deactivate = self.conn.execute(
+            """
+            SELECT listing_id, instrument_id, venue_mic, ticker, status
+            FROM listing
             WHERE data_source = ?
               AND COALESCE(status, 'active') <> 'inactive'
               AND NOT EXISTS (
@@ -289,15 +370,40 @@ class IngestDB:
                       AND s.ticker = listing.ticker
               )
             """,
-            (asof_date, data_source, run_id),
-        ).rowcount
+            (data_source, run_id),
+        ).fetchall()
+        if listing_rows_to_deactivate:
+            self.conn.executemany(
+                """
+                UPDATE listing
+                SET status = 'inactive',
+                    asof_date = ?
+                WHERE listing_id = ?
+                """,
+                [(asof_date, int(row["listing_id"])) for row in listing_rows_to_deactivate],
+            )
+            for row in listing_rows_to_deactivate:
+                self.record_lifecycle_event(
+                    run_id=run_id,
+                    entity_type="listing",
+                    instrument_id=int(row["instrument_id"]),
+                    listing_id=int(row["listing_id"]),
+                    venue_mic=row["venue_mic"],
+                    ticker=row["ticker"],
+                    data_source=data_source,
+                    previous_status=row["status"],
+                    new_status="inactive",
+                    event_type="deactivated",
+                    asof_date=asof_date,
+                    details=None,
+                )
+        listing_deactivated = len(listing_rows_to_deactivate)
 
         ts = now_utc_iso()
-        instrument_deactivated = self.conn.execute(
+        instrument_rows_to_deactivate = self.conn.execute(
             """
-            UPDATE instrument
-            SET status = 'inactive',
-                updated_at = ?
+            SELECT instrument_id, status
+            FROM instrument
             WHERE COALESCE(status, 'active') <> 'inactive'
               AND NOT EXISTS (
                     SELECT 1
@@ -305,14 +411,38 @@ class IngestDB:
                     WHERE listing.instrument_id = instrument.instrument_id
                       AND COALESCE(listing.status, 'active') = 'active'
               )
-            """,
-            (ts,),
-        ).rowcount
-        instrument_reactivated = self.conn.execute(
             """
-            UPDATE instrument
-            SET status = 'active',
-                updated_at = ?
+        ).fetchall()
+        if instrument_rows_to_deactivate:
+            self.conn.executemany(
+                """
+                UPDATE instrument
+                SET status = 'inactive',
+                    updated_at = ?
+                WHERE instrument_id = ?
+                """,
+                [(ts, int(row["instrument_id"])) for row in instrument_rows_to_deactivate],
+            )
+            for row in instrument_rows_to_deactivate:
+                self.record_lifecycle_event(
+                    run_id=run_id,
+                    entity_type="instrument",
+                    instrument_id=int(row["instrument_id"]),
+                    listing_id=None,
+                    venue_mic=None,
+                    ticker=None,
+                    data_source=data_source,
+                    previous_status=row["status"],
+                    new_status="inactive",
+                    event_type="deactivated",
+                    asof_date=asof_date,
+                    details=None,
+                )
+        instrument_deactivated = len(instrument_rows_to_deactivate)
+        instrument_rows_to_reactivate = self.conn.execute(
+            """
+            SELECT instrument_id, status
+            FROM instrument
             WHERE COALESCE(status, 'active') <> 'active'
               AND EXISTS (
                     SELECT 1
@@ -320,9 +450,34 @@ class IngestDB:
                     WHERE listing.instrument_id = instrument.instrument_id
                       AND COALESCE(listing.status, 'active') = 'active'
               )
-            """,
-            (ts,),
-        ).rowcount
+            """
+        ).fetchall()
+        if instrument_rows_to_reactivate:
+            self.conn.executemany(
+                """
+                UPDATE instrument
+                SET status = 'active',
+                    updated_at = ?
+                WHERE instrument_id = ?
+                """,
+                [(ts, int(row["instrument_id"])) for row in instrument_rows_to_reactivate],
+            )
+            for row in instrument_rows_to_reactivate:
+                self.record_lifecycle_event(
+                    run_id=run_id,
+                    entity_type="instrument",
+                    instrument_id=int(row["instrument_id"]),
+                    listing_id=None,
+                    venue_mic=None,
+                    ticker=None,
+                    data_source=data_source,
+                    previous_status=row["status"],
+                    new_status="active",
+                    event_type="reactivated",
+                    asof_date=asof_date,
+                    details=None,
+                )
+        instrument_reactivated = len(instrument_rows_to_reactivate)
         return {
             "listing_deactivated": listing_deactivated,
             "instrument_deactivated": instrument_deactivated,
@@ -389,11 +544,14 @@ class IngestDB:
         instrument_name: Optional[str],
         ucits_flag: Optional[int],
         issuer_id: Optional[int],
+        run_id: Optional[int],
+        data_source: str,
+        asof_date: str,
         stats: SourceStats,
     ) -> int:
         row = self.conn.execute(
             """
-            SELECT instrument_id, instrument_name, ucits_flag, issuer_id
+            SELECT instrument_id, instrument_name, ucits_flag, issuer_id, status
             FROM instrument
             WHERE isin = ?
             """,
@@ -412,12 +570,28 @@ class IngestDB:
                 (isin, instrument_name, ucits_flag, issuer_id, ts, ts),
             )
             stats.instrument_inserted += 1
-            return int(cur.lastrowid)
+            instrument_id = int(cur.lastrowid)
+            self.record_lifecycle_event(
+                run_id=run_id,
+                entity_type="instrument",
+                instrument_id=instrument_id,
+                listing_id=None,
+                venue_mic=None,
+                ticker=None,
+                data_source=data_source,
+                previous_status=None,
+                new_status="active",
+                event_type="inserted",
+                asof_date=asof_date,
+                details={"isin": isin, "instrument_name": instrument_name},
+            )
+            return instrument_id
 
         instrument_id = int(row["instrument_id"])
         current_name = row["instrument_name"]
         current_ucits = row["ucits_flag"]
         current_issuer = row["issuer_id"]
+        current_status = row["status"]
 
         next_name = current_name or instrument_name
         next_ucits = current_ucits
@@ -442,6 +616,22 @@ class IngestDB:
                 (next_name, next_ucits, next_issuer, ts, instrument_id),
             )
             stats.instrument_updated += 1
+            if current_status != "active":
+                stats.instrument_reactivated += 1
+                self.record_lifecycle_event(
+                    run_id=run_id,
+                    entity_type="instrument",
+                    instrument_id=instrument_id,
+                    listing_id=None,
+                    venue_mic=None,
+                    ticker=None,
+                    data_source=data_source,
+                    previous_status=current_status,
+                    new_status="active",
+                    event_type="reactivated",
+                    asof_date=asof_date,
+                    details={"isin": isin, "instrument_name": next_name},
+                )
         return instrument_id
 
     def upsert_listing(
@@ -454,6 +644,7 @@ class IngestDB:
         primary_flag: int,
         data_source: str,
         asof_date: str,
+        run_id: Optional[int],
         stats: SourceStats,
     ) -> None:
         row = self.conn.execute(
@@ -466,7 +657,7 @@ class IngestDB:
         ).fetchone()
 
         if row is None:
-            self.conn.execute(
+            cur = self.conn.execute(
                 """
                 INSERT INTO listing
                     (
@@ -488,6 +679,24 @@ class IngestDB:
                 ),
             )
             stats.listing_inserted += 1
+            self.record_lifecycle_event(
+                run_id=run_id,
+                entity_type="listing",
+                instrument_id=instrument_id,
+                listing_id=int(cur.lastrowid),
+                venue_mic=venue_mic,
+                ticker=ticker,
+                data_source=data_source,
+                previous_status=None,
+                new_status="active",
+                event_type="inserted",
+                asof_date=asof_date,
+                details={
+                    "exchange_name": exchange_name,
+                    "trading_currency": trading_currency,
+                    "primary_flag": primary_flag,
+                },
+            )
             return
 
         listing_id = int(row["listing_id"])
@@ -524,6 +733,26 @@ class IngestDB:
                 ),
             )
             stats.listing_updated += 1
+            if row["status"] != "active":
+                stats.listing_reactivated += 1
+                self.record_lifecycle_event(
+                    run_id=run_id,
+                    entity_type="listing",
+                    instrument_id=instrument_id,
+                    listing_id=listing_id,
+                    venue_mic=venue_mic,
+                    ticker=ticker,
+                    data_source=data_source,
+                    previous_status=row["status"],
+                    new_status="active",
+                    event_type="reactivated",
+                    asof_date=asof_date,
+                    details={
+                        "exchange_name": next_exchange_name,
+                        "trading_currency": next_currency,
+                        "primary_flag": next_primary_flag,
+                    },
+                )
 
 
 def find_header_index(headers: list[str], candidates: list[str]) -> Optional[int]:
@@ -606,6 +835,9 @@ def ingest_lse(db: IngestDB, fetcher: HttpFetcher, asof_date: str) -> SourceStat
                     instrument_name=instrument_name,
                     ucits_flag=ucits_flag,
                     issuer_id=issuer_id,
+                    run_id=run_id,
+                    data_source=DATA_SOURCE_LSE,
+                    asof_date=asof_date,
                     stats=stats,
                 )
                 db.upsert_listing(
@@ -617,6 +849,7 @@ def ingest_lse(db: IngestDB, fetcher: HttpFetcher, asof_date: str) -> SourceStat
                     primary_flag=0,
                     data_source=DATA_SOURCE_LSE,
                     asof_date=asof_date,
+                    run_id=run_id,
                     stats=stats,
                 )
                 db.record_listing_observation(
@@ -635,7 +868,7 @@ def ingest_lse(db: IngestDB, fetcher: HttpFetcher, asof_date: str) -> SourceStat
             )
             stats.listing_deactivated = reconcile_stats["listing_deactivated"]
             stats.instrument_deactivated = reconcile_stats["instrument_deactivated"]
-            stats.instrument_reactivated = reconcile_stats["instrument_reactivated"]
+            stats.instrument_reactivated += reconcile_stats["instrument_reactivated"]
             db.finish_source_run(
                 run_id=run_id,
                 status="succeeded",
@@ -651,7 +884,8 @@ def ingest_lse(db: IngestDB, fetcher: HttpFetcher, asof_date: str) -> SourceStat
         f"{DATA_SOURCE_LSE} parsed={stats.parsed_rows} skipped={stats.skipped_rows} "
         f"issuer_inserted={stats.issuer_inserted} instrument_inserted={stats.instrument_inserted} "
         f"instrument_updated={stats.instrument_updated} listing_inserted={stats.listing_inserted} "
-        f"listing_updated={stats.listing_updated} listing_deactivated={stats.listing_deactivated} "
+        f"listing_updated={stats.listing_updated} listing_reactivated={stats.listing_reactivated} "
+        f"listing_deactivated={stats.listing_deactivated} "
         f"instrument_deactivated={stats.instrument_deactivated} "
         f"instrument_reactivated={stats.instrument_reactivated}"
     )
@@ -733,6 +967,9 @@ def ingest_xetra(db: IngestDB, fetcher: HttpFetcher, asof_date: str) -> SourceSt
                     instrument_name=instrument_name,
                     ucits_flag=ucits_flag,
                     issuer_id=None,
+                    run_id=run_id,
+                    data_source=DATA_SOURCE_XETRA,
+                    asof_date=asof_date,
                     stats=stats,
                 )
                 db.upsert_listing(
@@ -744,6 +981,7 @@ def ingest_xetra(db: IngestDB, fetcher: HttpFetcher, asof_date: str) -> SourceSt
                     primary_flag=0,
                     data_source=DATA_SOURCE_XETRA,
                     asof_date=asof_date,
+                    run_id=run_id,
                     stats=stats,
                 )
                 db.record_listing_observation(
@@ -762,7 +1000,7 @@ def ingest_xetra(db: IngestDB, fetcher: HttpFetcher, asof_date: str) -> SourceSt
             )
             stats.listing_deactivated = reconcile_stats["listing_deactivated"]
             stats.instrument_deactivated = reconcile_stats["instrument_deactivated"]
-            stats.instrument_reactivated = reconcile_stats["instrument_reactivated"]
+            stats.instrument_reactivated += reconcile_stats["instrument_reactivated"]
             db.finish_source_run(
                 run_id=run_id,
                 status="succeeded",
@@ -778,7 +1016,8 @@ def ingest_xetra(db: IngestDB, fetcher: HttpFetcher, asof_date: str) -> SourceSt
         f"{DATA_SOURCE_XETRA} parsed={stats.parsed_rows} skipped={stats.skipped_rows} "
         f"issuer_inserted={stats.issuer_inserted} instrument_inserted={stats.instrument_inserted} "
         f"instrument_updated={stats.instrument_updated} listing_inserted={stats.listing_inserted} "
-        f"listing_updated={stats.listing_updated} listing_deactivated={stats.listing_deactivated} "
+        f"listing_updated={stats.listing_updated} listing_reactivated={stats.listing_reactivated} "
+        f"listing_deactivated={stats.listing_deactivated} "
         f"instrument_deactivated={stats.instrument_deactivated} "
         f"instrument_reactivated={stats.instrument_reactivated}"
     )
@@ -836,6 +1075,9 @@ def ingest_cboe(db: IngestDB, fetcher: HttpFetcher, asof_date: str) -> SourceSta
                         instrument_name=instrument_name,
                         ucits_flag=ucits_flag,
                         issuer_id=None,
+                        run_id=run_id,
+                        data_source=DATA_SOURCE_CBOE,
+                        asof_date=asof_date,
                         stats=stats,
                     )
                     db.upsert_listing(
@@ -847,6 +1089,7 @@ def ingest_cboe(db: IngestDB, fetcher: HttpFetcher, asof_date: str) -> SourceSta
                         primary_flag=0,
                         data_source=DATA_SOURCE_CBOE,
                         asof_date=asof_date,
+                        run_id=run_id,
                         stats=stats,
                     )
                     db.record_listing_observation(
@@ -865,7 +1108,7 @@ def ingest_cboe(db: IngestDB, fetcher: HttpFetcher, asof_date: str) -> SourceSta
             )
             stats.listing_deactivated = reconcile_stats["listing_deactivated"]
             stats.instrument_deactivated = reconcile_stats["instrument_deactivated"]
-            stats.instrument_reactivated = reconcile_stats["instrument_reactivated"]
+            stats.instrument_reactivated += reconcile_stats["instrument_reactivated"]
             db.finish_source_run(
                 run_id=run_id,
                 status="succeeded",
@@ -881,7 +1124,8 @@ def ingest_cboe(db: IngestDB, fetcher: HttpFetcher, asof_date: str) -> SourceSta
         f"{DATA_SOURCE_CBOE} parsed={stats.parsed_rows} skipped={stats.skipped_rows} "
         f"issuer_inserted={stats.issuer_inserted} instrument_inserted={stats.instrument_inserted} "
         f"instrument_updated={stats.instrument_updated} listing_inserted={stats.listing_inserted} "
-        f"listing_updated={stats.listing_updated} listing_deactivated={stats.listing_deactivated} "
+        f"listing_updated={stats.listing_updated} listing_reactivated={stats.listing_reactivated} "
+        f"listing_deactivated={stats.listing_deactivated} "
         f"instrument_deactivated={stats.instrument_deactivated} "
         f"instrument_reactivated={stats.instrument_reactivated}"
     )
