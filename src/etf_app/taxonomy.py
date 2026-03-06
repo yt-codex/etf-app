@@ -99,13 +99,13 @@ PATTERNS = {
     "bond_core": [r"\bBOND(?:S)?\b", r"\bTREAS(?:URY)?\b", r"\bGOV(?:ERNMENT)?\b", r"\bGOVT\b", r"\bGILT(?:S)?\b", r"\bCORP(?:ORATE)?\b", r"\bCREDIT\b", r"\bSOVEREIGN\b", r"\bAGG(?:REGATE)?\b", r"\bLINK(?:ED|ERS?)?\b", r"\bTIPS\b", r"\bREXX\b", r"\bPFANDBRIEFE\b", r"\bCOVERED\b", r"\bFLOAT(?:ING)? RATE\b", r"\bFLOT RATE\b"],
     "bond_special": [r"I\.EB\.R\.", r"\bT[\s-]?BOND\b", r"\bT[\s-]?BND\b", r"\bTR BOND\b", r"\bTR BND\b"],
     "bond_type_linkers": [r"\bINFLATION\b", r"\bLINK(?:ED|ERS?)?\b", r"\bTIPS\b"],
-    "bond_type_govt": [r"\bTREAS(?:URY)?\b", r"\bTRSY\b", r"\bTSY\b", r"\bGOV(?:ERNMENT)?\b", r"\bGOVT\b", r"\bGILT(?:S)?\b", r"\bSOVEREIGN\b", r"\bUST\b", r"\bJGB\b", r"\bBUND\b", r"\bOAT\b", r"\bBTP\b", r"\bTREASURY BILL\b", r"\bT[\s-]?BILL\b", r"\bPFANDBRIEFE\b", r"\bREXX\b", r"I\.EB\.R\.", r"\bTR BOND\b", r"\bTR BND\b"],
+    "bond_type_govt": [r"\bTREAS(?:URY)?\b", r"\bTRSY\b", r"\bTSY\b", r"\bGOV(?:ERNMENT)?\b", r"\bGOVT\b", r"\bGILT(?:S)?\b", r"\bSOVEREIGN\b", r"\bEMBI\b", r"\bUST\b", r"\bJGB\b", r"\bBUND\b", r"\bOAT\b", r"\bBTP\b", r"\bTREASURY BILL\b", r"\bT[\s-]?BILL\b", r"\bPFANDBRIEFE\b", r"\bREXX\b", r"I\.EB\.R\.", r"\bTR BOND\b", r"\bTR BND\b"],
     "bond_type_aggregate": [r"\bAGG(?:REGATE)?\b", r"\bTOTAL BOND\b", r"\bAGG BOND\b"],
-    "bond_type_corp": [r"\bCORP(?:ORATE)?\b", r"\bCREDIT\b", r"\bHIGH YIELD\b", r"\bINVESTMENT GRADE\b", r"\bCORP BOND\b"],
+    "bond_type_corp": [r"\bCORP(?:ORATE)?\b", r"\bCREDIT\b", r"\bHIGH YIELD\b", r"\bINVESTMENT GRADE\b", r"\bCORP BOND\b", r"\bFLOAT(?:ING)? RATE\b", r"\bFRN\b"],
     "equity_hint": [r"\bMSCI\b", r"\bFTSE\b", r"\bSTOXX\b", r"\bEURO STOXX", r"\bS P\b", r"\bNASDAQ\b", r"\bRUSSELL\b", r"\bNIKKEI\b", r"\bTOPIX\b", r"\bDAX\b", r"\bDAX[0-9A-Z]*\b", r"\bMDAX\b", r"\bSDAX\b", r"\bTECDAX\b", r"\bDIVDAX\b", r"\bATX\b", r"\bSLI\b", r"\bSMI\b", r"\bSOFIX\b", r"\bCROBEX\b", r"\bPX\b", r"\bASE\b", r"\bBUX\b", r"\bMBI10\b", r"\bWIG20\b", r"\bSAX\b", r"\bSBI\b", r"\bBELEX\b", r"\bMIB\b", r"\bEMU\b", r"\bBRAZIL\b", r"\bSPAIN\b", r"\bUK\b", r"\bEU S 50\b", r"\bDOW JONES\b", r"\bDJIA\b", r"\bEQUITY\b", r"\bEQ\b", r"\bSHARES?\b", r"\bSTOCK\b", r"\bWORLD\b", r"\bGLOBAL\b", r"\bEMERGING\b", r"\bSMALL CAP\b", r"\bMID CAP\b", r"\bLARGE CAP\b", r"\bVALUE\b", r"\bGROWTH\b", r"\bQUALITY\b", r"\bMOMENTUM\b", r"\bDIVIDEND\b", r"\bEPI\b"],
     "region_global": [r"\bWORLD\b", r"\bGLOBAL\b", r"\bACWI\b", r"\bALL COUNTRY\b", r"\bALL WORLD\b"],
     "region_north_america": [r"\bNORTH AMERICA\b"],
-    "region_em": [r"\bEMERGING\b", r"\bLATIN AMERICA\b", r"\bEM IMI\b", r"\bEM MARKETS?\b", r"\bMSCI EM\b", r"\bEM EQ\b"],
+    "region_em": [r"\bEMERGING\b", r"\bEMERGING MARKETS?\b", r"\bLATIN AMERICA\b", r"\bEM IMI\b", r"\bEM MARKETS?\b", r"\bMSCI EM\b", r"\bEM EQ\b", r"\bEMBI\b"],
     "region_europe": [r"\bEUROPE\b", r"\bEU\b", r"\bEURO STOXX", r"\bEUROZONE\b", r"\bSTOXX EUROPE\b", r"\bEURO ST\b", r"\bEU 600\b", r"\bS E 600\b", r"\bEU S 50\b", r"\bEMU\b", r"\bMIB\b", r"\bEURO PRIME\b", r"\bSPAIN\b", r"\bUK\b"],
     "region_asia": [r"\bASIA\b", r"\bPACIFIC\b", r"\bASIA PACIFIC\b"],
     "sector_technology": [r"\bTECH(?:NOLOGY)?\b", r"\bTECDAX\b", r"\bSEMICONDUCTOR\b"],
@@ -119,7 +119,7 @@ PATTERNS = {
     "sector_communication": [r"\bCOMMUNICATION\b", r"\bTELECOM\b", r"\bMEDIA\b"],
     "theme_robotics": [r"\bROBOTICS\b"],
     "theme_ai": [r"\bAI\b", r"\bARTIFICIAL INTELLIGENCE\b"],
-    "theme_esg": [r"\bESG\b", r"\bSUSTAIN(?:ABLE|ABILITY)?\b", r"\bPARIS ALIGNED\b", r"\bSCR(?:EENED)?\b"],
+    "theme_esg": [r"\bESG\b", r"\bSUSTAIN(?:ABLE|ABILITY)?\b", r"\bPARIS ALIGNED\b", r"\bSCR(?:EENED)?\b", r"\bSRI\b", r"\bPAB\b", r"\bCTB\b", r"\bCLIMATE\b", r"\bRESPONSIBLE\b", r"\bLOW CARBON\b"],
     "factor_quality": [r"\bQUALITY\b"],
     "factor_momentum": [r"\bMOMENTUM\b"],
     "factor_dividend": [r"\bDIVIDEND\b", r"\bINCOME\b", r"\bEPI\b", r"\bSELECT DIV\b"],
@@ -478,6 +478,10 @@ def classify_instrument(
         geography_region = region_from_country
         geography_scope = "country"
         evidence.append(f"country:{geography_country}")
+    elif _has_any(analysis_text, COMPILED_PATTERNS["region_em"]):
+        geography_region = "em"
+        geography_scope = "regional"
+        evidence.append("region:em")
     elif _has_any(analysis_text, COMPILED_PATTERNS["region_global"]):
         geography_region = "global"
         geography_scope = "global"
@@ -486,10 +490,6 @@ def classify_instrument(
         geography_region = "north_america"
         geography_scope = "regional"
         evidence.append("region:north_america")
-    elif _has_any(analysis_text, COMPILED_PATTERNS["region_em"]):
-        geography_region = "em"
-        geography_scope = "regional"
-        evidence.append("region:em")
     elif _has_any(analysis_text, COMPILED_PATTERNS["region_europe"]):
         geography_region = "europe"
         geography_scope = "regional"

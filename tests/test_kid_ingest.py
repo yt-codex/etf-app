@@ -32,3 +32,18 @@ def test_extract_profile_metadata_from_kid_text_detects_hedged_share_class() -> 
     assert parsed["domicile_country"] == "Ireland"
     assert parsed["hedged_flag"] == 1
     assert parsed["hedged_target"] == "EUR"
+
+
+def test_extract_profile_metadata_from_benchmarkless_avantis_style_kid_text() -> None:
+    text = (
+        "Product Avantis Emerging Markets Equity UCITS ETF USD ACC ETF (IE000K975W13) "
+        "Avantis Emerging Markets Equity UCITS ETF is authorised in Ireland and regulated by the Central Bank of Ireland. "
+        "What is this product? Type This is an investment fund. "
+        "The fund invests primarily in equity securities of companies in emerging markets. "
+    )
+
+    parsed = extract_profile_metadata_from_text(text)
+
+    assert parsed["asset_class_hint"] == "Equity"
+    assert parsed["domicile_country"] == "Ireland"
+    assert parsed["benchmark_name"] is None

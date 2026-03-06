@@ -43,6 +43,17 @@ DOCUMENT_API_CONTEXTS = (
     {"countryCode": "LUX", "languageCode": "en", "userProfileName": "INSTIT"},
 )
 DISCOVERY_BATCH_SIZE = 100
+AMUNDI_KID_TEMPLATE_CONTEXTS = (
+    ("ENG", "LUX"),
+    ("ENG", "GBR"),
+    ("ENG", "CHE"),
+    ("ENG", "DEU"),
+    ("ENG", "FRA"),
+    ("FRA", "FRA"),
+    ("DEU", "DEU"),
+    ("ENG", "ESP"),
+    ("ENG", "NLD"),
+)
 SELF_TEST_ISIN = "LU1407890547"
 
 
@@ -84,6 +95,14 @@ class DiscoveredFactsheet:
 class FactsheetCandidate:
     url: str
     source: str
+
+
+@dataclass
+class KidFallbackResult:
+    success: bool
+    source_url: Optional[str]
+    parsed: Optional[dict[str, object]]
+    attempts: list[dict[str, object]]
 
 
 def log(message: str) -> None:
@@ -368,6 +387,104 @@ def build_factsheet_candidates(
     add(known_url, "instrument_url_map")
     add(build_factsheet_url(isin), "legacy_template")
     return candidates
+
+
+def build_amundi_kid_candidate_urls(isin: str) -> list[str]:
+    isin_upper = isin.upper()
+    return [
+        f"https://www.amundietf.lu/pdfDocuments/kid-priips/{isin_upper}/{language}/{country}"
+        for language, country in AMUNDI_KID_TEMPLATE_CONTEXTS
+    ]
+
+
+def try_amundi_kid_fallback(client: HttpClient, cache_dir: Path, isin: str) -> KidFallbackResult:
+    from etf_app.kid_ingest import detect_language_from_url, parse_ongoing_charges
+
+    attempts: list[dict[str, object]] = []
+    for candidate_url in build_amundi_kid_candidate_urls(isin):
+        probe = probe_pdf_url(client, candidate_url)
+        attempt: dict[str, object] = {
+            "candidate_url": candidate_url,
+            "probe": {
+                "accepted": probe.accepted,
+                "reason": probe.reason,
+                "status_code": probe.status_code,
+                "content_type": probe.content_type,
+                "final_url": probe.final_url,
+                "method": probe.method,
+                "first_bytes_hex": probe.first_bytes_hex,
+            },
+        }
+        if not probe.accepted:
+            attempts.append(attempt)
+            continue
+
+        final_url = probe.final_url or candidate_url
+        dl = download_pdf(client, final_url, cache_dir)
+        attempt["download"] = {
+            "success": dl.success,
+            "error": dl.error,
+            "final_url": dl.final_url,
+            "from_cache": dl.from_cache,
+            "status": dl.http_status,
+            "content_type": dl.content_type,
+            "cache_path": str(dl.cache_path) if dl.cache_path else None,
+        }
+        if not dl.success or not dl.pdf_bytes:
+            attempts.append(attempt)
+            continue
+
+        parsed = parse_ongoing_charges(dl.pdf_bytes)
+        if not parsed.get("language"):
+            parsed["language"] = detect_language_from_url(dl.final_url or final_url)
+        attempt["parse"] = {
+            "ongoing_charges": parsed.get("ongoing_charges"),
+            "benchmark_name": parsed.get("benchmark_name"),
+            "asset_class_hint": parsed.get("asset_class_hint"),
+            "domicile_country": parsed.get("domicile_country"),
+            "replication_method": parsed.get("replication_method"),
+            "hedged_flag": parsed.get("hedged_flag"),
+            "hedged_target": parsed.get("hedged_target"),
+            "effective_date": parsed.get("effective_date"),
+            "language": parsed.get("language"),
+            "extractor": parsed.get("extractor"),
+            "fallback_used": parsed.get("fallback_used"),
+            "error": parsed.get("error"),
+        }
+        attempts.append(attempt)
+        if parsed.get("ongoing_charges") is not None:
+            return KidFallbackResult(
+                success=True,
+                source_url=dl.final_url or final_url,
+                parsed=parsed,
+                attempts=attempts,
+            )
+
+    return KidFallbackResult(success=False, source_url=None, parsed=None, attempts=attempts)
+
+
+def merge_profile_metadata(
+    primary: dict[str, object],
+    secondary: Optional[dict[str, object]],
+    *,
+    ter_field: str = "ongoing_charges",
+) -> dict[str, object]:
+    merged = dict(primary)
+    if not secondary:
+        return merged
+    field_map = {
+        "benchmark_name": "benchmark_name",
+        "asset_class_hint": "asset_class_hint",
+        "domicile_country": "domicile_country",
+        "replication_method": "replication_method",
+        "hedged_flag": "hedged_flag",
+        "hedged_target": "hedged_target",
+        "ter": ter_field,
+    }
+    for target_field, source_field in field_map.items():
+        if merged.get(target_field) is None and secondary.get(source_field) is not None:
+            merged[target_field] = secondary.get(source_field)
+    return merged
 
 
 def is_pdf_probe_success(content_type: Optional[str], final_url: Optional[str], first_bytes: bytes) -> bool:
@@ -1227,92 +1344,135 @@ def main(argv: list[str]) -> int:
                     selected_candidate = candidate
                     break
             debug["probe_attempts"] = probe_attempts
-            if probe is None or selected_candidate is None:
-                insert_issuer_metadata_snapshot(
-                    conn,
-                    instrument_id=instrument_id,
-                    asof_date=asof_date,
-                    source_url=factsheet_candidates[0].url if factsheet_candidates else build_factsheet_url(isin),
-                    ter=None,
-                    use_of_income=None,
-                    ucits_compliant=None,
-                    quality_flag="download_fail",
-                    raw_json=debug,
-                )
-                if idx % 25 == 0:
-                    log(f"Processed {idx}/{attempted}: download_fail")
-                continue
-
-            url_ok += 1
-            debug["selected_candidate"] = {
-                "url": selected_candidate.url,
-                "source": selected_candidate.source,
+            final_url: Optional[str] = None
+            cost_source_url: Optional[str] = None
+            ter: Optional[float] = None
+            use_of_income: Optional[str] = None
+            ucits_compliant: Optional[int] = None
+            quality = "download_fail"
+            instrument_url_ok = False
+            instrument_downloaded = False
+            merged_parse: dict[str, object] = {
+                "ter": None,
+                "benchmark_name": None,
+                "asset_class_hint": None,
+                "domicile_country": None,
+                "replication_method": None,
+                "hedged_flag": None,
+                "hedged_target": None,
             }
-            final_url = probe.final_url or selected_candidate.url
-            upsert_instrument_url_map(conn, instrument_id, final_url)
 
-            dl = download_pdf(client, final_url, cache_dir)
-            debug["download"] = {
-                "success": dl.success,
-                "error": dl.error,
-                "final_url": dl.final_url,
-                "from_cache": dl.from_cache,
-                "status": dl.http_status,
-                "content_type": dl.content_type,
-                "cache_path": str(dl.cache_path) if dl.cache_path else None,
+            if probe is not None and selected_candidate is not None:
+                instrument_url_ok = True
+                debug["selected_candidate"] = {
+                    "url": selected_candidate.url,
+                    "source": selected_candidate.source,
+                }
+                final_url = probe.final_url or selected_candidate.url
+                cost_source_url = final_url
+                upsert_instrument_url_map(conn, instrument_id, final_url)
+
+                dl = download_pdf(client, final_url, cache_dir)
+                debug["download"] = {
+                    "success": dl.success,
+                    "error": dl.error,
+                    "final_url": dl.final_url,
+                    "from_cache": dl.from_cache,
+                    "status": dl.http_status,
+                    "content_type": dl.content_type,
+                    "cache_path": str(dl.cache_path) if dl.cache_path else None,
+                }
+                if dl.success and dl.pdf_bytes:
+                    instrument_downloaded = True
+                    parsed = parse_factsheet_pdf(dl.pdf_bytes)
+                    ter = parsed.get("ter") if isinstance(parsed.get("ter"), (int, float)) else None
+                    use_of_income = (
+                        str(parsed.get("use_of_income")) if parsed.get("use_of_income") is not None else None
+                    )
+                    ucits_compliant = (
+                        int(parsed.get("ucits_compliant"))
+                        if parsed.get("ucits_compliant") is not None
+                        else None
+                    )
+                    merged_parse = {
+                        "ter": ter,
+                        "use_of_income": use_of_income,
+                        "ucits_compliant": ucits_compliant,
+                        "benchmark_name": parsed.get("benchmark_name"),
+                        "asset_class_hint": parsed.get("asset_class_hint"),
+                        "domicile_country": parsed.get("domicile_country"),
+                        "replication_method": parsed.get("replication_method"),
+                        "hedged_flag": parsed.get("hedged_flag"),
+                        "hedged_target": parsed.get("hedged_target"),
+                        "matched_fee_line": parsed.get("matched_fee_line"),
+                        "matched_distribution_line": parsed.get("matched_distribution_line"),
+                        "matched_ucits_line": parsed.get("matched_ucits_line"),
+                        "extractor": parsed.get("extractor"),
+                        "fallback_used": parsed.get("fallback_used"),
+                        "page_count": parsed.get("page_count"),
+                        "extract_errors": parsed.get("extract_errors"),
+                        "text_char_count": parsed.get("text_char_count"),
+                    }
+                    debug["parse"] = merged_parse
+
+            if ter is None:
+                kid_fallback = try_amundi_kid_fallback(client, cache_dir, isin)
+                debug["kid_fallback"] = {
+                    "success": kid_fallback.success,
+                    "source_url": kid_fallback.source_url,
+                    "attempts": kid_fallback.attempts,
+                }
+                if kid_fallback.success and kid_fallback.parsed:
+                    instrument_url_ok = True
+                    instrument_downloaded = True
+                    if final_url is None:
+                        final_url = kid_fallback.source_url
+                    merged_parse = merge_profile_metadata(merged_parse, kid_fallback.parsed, ter_field="ongoing_charges")
+                    if ter is None and merged_parse.get("ter") is not None:
+                        ter = float(merged_parse["ter"])
+                        cost_source_url = kid_fallback.source_url
+                    if ucits_compliant is None and "UCITS" in (row["instrument_name"] or "").upper():
+                        ucits_compliant = 1
+                    if "selected_candidate" not in debug:
+                        debug["selected_candidate"] = {
+                            "url": kid_fallback.source_url,
+                            "source": "amundi_kid_fallback",
+                        }
+                    debug["selected_cost_source"] = {
+                        "url": cost_source_url or final_url,
+                        "source": "amundi_kid_fallback" if cost_source_url == kid_fallback.source_url else "factsheet",
+                    }
+
+            debug["parse"] = {
+                **merged_parse,
+                "use_of_income": use_of_income,
+                "ucits_compliant": ucits_compliant,
             }
-            if not dl.success or not dl.pdf_bytes:
-                insert_issuer_metadata_snapshot(
-                    conn,
-                    instrument_id=instrument_id,
-                    asof_date=asof_date,
-                    source_url=final_url,
-                    ter=None,
-                    use_of_income=None,
-                    ucits_compliant=None,
-                    quality_flag="download_fail",
-                    raw_json=debug,
-                )
-                if idx % 25 == 0:
-                    log(f"Processed {idx}/{attempted}: download_fail")
-                continue
 
-            downloaded += 1
-            parsed = parse_factsheet_pdf(dl.pdf_bytes)
-            ter = parsed.get("ter") if isinstance(parsed.get("ter"), (int, float)) else None
-            use_of_income = (
-                str(parsed.get("use_of_income")) if parsed.get("use_of_income") is not None else None
-            )
-            ucits_compliant = (
-                int(parsed.get("ucits_compliant"))
-                if parsed.get("ucits_compliant") is not None
-                else None
-            )
-
+            if instrument_url_ok:
+                url_ok += 1
+            if instrument_downloaded:
+                downloaded += 1
             if ter is not None:
                 fee_parsed += 1
             if use_of_income is not None:
                 distribution_parsed += 1
 
-            debug["parse"] = {
-                "ter": ter,
-                "use_of_income": use_of_income,
-                "ucits_compliant": ucits_compliant,
-                "benchmark_name": parsed.get("benchmark_name"),
-                "asset_class_hint": parsed.get("asset_class_hint"),
-                "domicile_country": parsed.get("domicile_country"),
-                "replication_method": parsed.get("replication_method"),
-                "hedged_flag": parsed.get("hedged_flag"),
-                "hedged_target": parsed.get("hedged_target"),
-                "matched_fee_line": parsed.get("matched_fee_line"),
-                "matched_distribution_line": parsed.get("matched_distribution_line"),
-                "matched_ucits_line": parsed.get("matched_ucits_line"),
-                "extractor": parsed.get("extractor"),
-                "fallback_used": parsed.get("fallback_used"),
-                "page_count": parsed.get("page_count"),
-                "extract_errors": parsed.get("extract_errors"),
-                "text_char_count": parsed.get("text_char_count"),
-            }
+            if not instrument_downloaded or final_url is None:
+                insert_issuer_metadata_snapshot(
+                    conn,
+                    instrument_id=instrument_id,
+                    asof_date=asof_date,
+                    source_url=final_url or (factsheet_candidates[0].url if factsheet_candidates else build_factsheet_url(isin)),
+                    ter=None,
+                    use_of_income=None,
+                    ucits_compliant=None,
+                    quality_flag="download_fail",
+                    raw_json=debug,
+                )
+                if idx % 25 == 0:
+                    log(f"Processed {idx}/{attempted}: download_fail")
+                continue
 
             quality = "ok" if ter is not None else "parse_fail"
             if ter is not None:
@@ -1321,7 +1481,7 @@ def main(argv: list[str]) -> int:
                     instrument_id=instrument_id,
                     asof_date=asof_date,
                     ter=float(ter),
-                    source_url=final_url,
+                    source_url=cost_source_url or final_url,
                     use_of_income=use_of_income,
                     ucits_compliant=ucits_compliant,
                 )
@@ -1331,7 +1491,7 @@ def main(argv: list[str]) -> int:
                         (
                             isin,
                             ticker,
-                            final_url,
+                            cost_source_url or final_url,
                             f"{float(ter):.4f}",
                             use_of_income or "NULL",
                             str(ucits_compliant) if ucits_compliant is not None else "NULL",
@@ -1345,7 +1505,7 @@ def main(argv: list[str]) -> int:
                 conn,
                 instrument_id=instrument_id,
                 asof_date=asof_date,
-                source_url=final_url,
+                source_url=cost_source_url or final_url,
                 ter=float(ter) if ter is not None else None,
                 use_of_income=use_of_income,
                 ucits_compliant=ucits_compliant,

@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from etf_app.amundi_enrich import (
+    build_amundi_kid_candidate_urls,
     build_factsheet_candidates,
     extract_distribution,
     extract_fee,
     extract_profile_metadata_from_factsheet,
+    merge_profile_metadata,
     select_monthly_factsheet_document,
 )
 
@@ -140,3 +142,39 @@ def test_build_factsheet_candidates_prefers_discovered_then_known_then_legacy() 
         "instrument_url_map",
         "legacy_template",
     ]
+
+
+def test_build_amundi_kid_candidate_urls_includes_priority_contexts() -> None:
+    urls = build_amundi_kid_candidate_urls("LU1686830909")
+
+    assert urls[0] == "https://www.amundietf.lu/pdfDocuments/kid-priips/LU1686830909/ENG/LUX"
+    assert "https://www.amundietf.lu/pdfDocuments/kid-priips/LU1686830909/FRA/FRA" in urls
+    assert "https://www.amundietf.lu/pdfDocuments/kid-priips/LU1686830909/DEU/DEU" in urls
+
+
+def test_merge_profile_metadata_backfills_missing_fields_from_kid_payload() -> None:
+    primary = {
+        "ter": None,
+        "benchmark_name": None,
+        "asset_class_hint": "Bond",
+        "domicile_country": None,
+        "replication_method": None,
+        "hedged_flag": None,
+        "hedged_target": None,
+    }
+    secondary = {
+        "ongoing_charges": 0.10,
+        "benchmark_name": "J.P. Morgan EMBI Global Diversified Index",
+        "domicile_country": "Luxembourg",
+        "replication_method": "synthetic",
+        "hedged_target": "USD",
+    }
+
+    merged = merge_profile_metadata(primary, secondary, ter_field="ongoing_charges")
+
+    assert merged["ter"] == 0.10
+    assert merged["asset_class_hint"] == "Bond"
+    assert merged["benchmark_name"] == "J.P. Morgan EMBI Global Diversified Index"
+    assert merged["domicile_country"] == "Luxembourg"
+    assert merged["replication_method"] == "synthetic"
+    assert merged["hedged_target"] == "USD"

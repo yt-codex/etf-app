@@ -187,3 +187,48 @@ def test_classifies_duration_and_hedge_from_profile_metadata() -> None:
     assert result.domicile_country == "Luxembourg"
     assert result.hedged_flag == 1
     assert result.hedged_target == "GBP"
+
+
+def test_classifies_emerging_market_bond_from_benchmark_metadata() -> None:
+    result = classify_instrument(
+        isin="LU1686830909",
+        instrument_name="AMUNDI GLOBAL EMERGING BOND",
+        instrument_type="ETF",
+        distribution_policy="Distributing",
+        benchmark_name="J.P. Morgan EMBI Global Diversified Index",
+        asset_class_hint="Bond",
+    )
+
+    assert result.asset_class == "bond"
+    assert result.geography_region == "em"
+    assert result.bond_type == "govt"
+
+
+def test_classifies_sector_and_region_from_benchmark_metadata() -> None:
+    result = classify_instrument(
+        isin="FR0010688176",
+        instrument_name="AMUNDI ETF",
+        instrument_type="ETF",
+        distribution_policy="Distributing",
+        benchmark_name="MSCI Europe Banks Index",
+        asset_class_hint="Equity",
+    )
+
+    assert result.asset_class == "equity"
+    assert result.geography_region == "europe"
+    assert result.sector == "financials"
+
+
+def test_classifies_esg_theme_from_benchmark_metadata() -> None:
+    result = classify_instrument(
+        isin="LU2469335025",
+        instrument_name="AMUNDI JAPAN ETF",
+        instrument_type="ETF",
+        distribution_policy="Distributing",
+        benchmark_name="MSCI Japan SRI PAB Index",
+        asset_class_hint="Equity",
+    )
+
+    assert result.asset_class == "equity"
+    assert result.geography_country == "Japan"
+    assert result.theme == "esg"

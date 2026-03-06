@@ -1226,7 +1226,10 @@ def extract_profile_metadata_from_text(text: str) -> dict[str, object]:
     for pattern in (
         r"reflect the performance, before fees and expenses, of (?:the )?(.+?) \(index\)",
         r"track the performance(?:, before fees and expenses,)? of (?:the )?(.+?)(?:\.|,)",
+        r"seek(?:s)? to track(?: as closely as possible)? the performance of (?:the )?(.+?)(?:\.|,)",
+        r"reference index(?: is| shall be)?\s*(.+?)(?:\.|,| objective| investment policy| what is this product\?)",
         r"underlying index(?: is| shall be)? (.+?)(?:\.|,)",
+        r"benchmark(?: index)?\s*[:\-]\s*(.+?)(?:\.|,| objective| investment policy| what is this product\?)",
     ):
         match = re.search(pattern, normalized, flags=re.IGNORECASE)
         if match:
@@ -1241,7 +1244,14 @@ def extract_profile_metadata_from_text(text: str) -> dict[str, object]:
     domicile_country: Optional[str] = None
     domicile_patterns = (
         ("Ireland", (r"\bIRISH BASED UCITS\b", r"\bauthori[sz]ed in Ireland\b", r"\bunder the laws of Ireland\b")),
-        ("Luxembourg", (r"\bauthori[sz]ed in Luxembourg\b", r"\bunder the laws of Luxembourg\b")),
+        (
+            "Luxembourg",
+            (
+                r"\bauthori[sz]ed in Luxembourg\b",
+                r"\bunder the laws of Luxembourg\b",
+                r"\bregulated by the Commission de Surveillance du Secteur Financier\b",
+            ),
+        ),
         ("France", (r"\bauthori[sz]ed in France\b", r"\bunder the laws of France\b")),
         ("Germany", (r"\bauthori[sz]ed in Germany\b", r"\bunder the laws of Germany\b")),
         ("United Kingdom", (r"\bauthori[sz]ed in the United Kingdom\b", r"\bunder the laws of the United Kingdom\b")),
@@ -1262,6 +1272,10 @@ def extract_profile_metadata_from_text(text: str) -> dict[str, object]:
         asset_class_hint = "Bond"
     elif re.search(r"\b(MSCI|FTSE|STOXX|S&P|NASDAQ|RUSSELL|NIKKEI|TOPIX)\b", benchmark_upper):
         asset_class_hint = "Equity"
+    elif re.search(r"\b(EQUITY|SMALL CAP|MID CAP|LARGE CAP|MSCI|FTSE|STOXX|S&P|NASDAQ|RUSSELL|NIKKEI|TOPIX)\b", header_window, flags=re.IGNORECASE):
+        asset_class_hint = "Equity"
+    elif re.search(r"\b(BOND|TREASURY|GILT|FLOATING RATE|FIXED INCOME|CREDIT|AGGREGATE)\b", header_window, flags=re.IGNORECASE):
+        asset_class_hint = "Bond"
     elif re.search(r"\b(COMMODITY|GOLD|SILVER|BULLION)\b", objective_window, flags=re.IGNORECASE):
         asset_class_hint = "Commodity"
     elif re.search(r"\b(MONEY MARKET|CASH EQUIVALENT)\b", objective_window, flags=re.IGNORECASE):
@@ -1280,7 +1294,14 @@ def extract_profile_metadata_from_text(text: str) -> dict[str, object]:
         r"attempt to replicate the index.*?by buying all or a substantial number of the securities",
         normalized,
         flags=re.IGNORECASE,
-    ) or re.search(r"\bPHYSICAL REPLICATION\b", upper):
+    ) or re.search(
+        r"\b(PHYSICAL REPLICATION|DIRECT REPLICATION)\b",
+        upper,
+    ) or re.search(
+        r"\b(by holding|holds?|invests? directly in)\b.{0,120}\b(securities|constituents|underlying assets?)\b",
+        normalized,
+        flags=re.IGNORECASE,
+    ):
         replication_method = "physical"
 
     hedged_flag: Optional[int] = None
@@ -1289,7 +1310,7 @@ def extract_profile_metadata_from_text(text: str) -> dict[str, object]:
         hedged_flag = 0
     else:
         hedge_match = re.search(
-            r"\b(USD|EUR|GBP|JPY|CHF)\s+HEDGED\b|\bHEDGED\b.*?\b(USD|EUR|GBP|JPY|CHF)\b",
+            r"\b(USD|EUR|GBP|JPY|CHF)\s+(?:CURRENCY\s+)?HEDGED\b|\bHEDGED\b.*?\b(USD|EUR|GBP|JPY|CHF)\b",
             upper,
         )
         if hedge_match:

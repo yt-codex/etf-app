@@ -279,19 +279,48 @@ def _coerce_optional_flag(value: object) -> Optional[int]:
     return None
 
 
+def _first_present(payload: dict[str, object], *keys: str) -> object:
+    for key in keys:
+        if key in payload and payload.get(key) is not None:
+            return payload.get(key)
+    return None
+
+
+def _normalize_replication_method(value: object) -> Optional[str]:
+    text = _normalize_text_value(value)
+    if not text:
+        return None
+    upper = text.upper()
+    if "PHYS" in upper:
+        return "physical"
+    if "SYNTH" in upper or "SWAP" in upper:
+        return "synthetic"
+    return text
+
+
 def _extract_profile_metadata_from_payload(payload: dict[str, object]) -> dict[str, object]:
     extracted: dict[str, object] = {}
-    for container_key in ("parsed", "parse"):
+    for container_key in ("parsed", "parse", "parse_ongoing", "profile_metadata", "metadata"):
         nested = payload.get(container_key)
         if isinstance(nested, dict):
             payload = {**payload, **nested}
 
-    benchmark_name = _normalize_text_value(payload.get("benchmark_name"))
-    asset_class_hint = _normalize_text_value(payload.get("asset_class_hint"))
-    domicile_country = _normalize_text_value(payload.get("domicile_country"))
-    replication_method = _normalize_text_value(payload.get("replication_method"))
-    hedged_flag = _coerce_optional_flag(payload.get("hedged_flag"))
-    hedged_target = _normalize_text_value(payload.get("hedged_target"))
+    benchmark_name = _normalize_text_value(
+        _first_present(payload, "benchmark_name", "benchmark", "index_name", "benchmark_index_name")
+    )
+    asset_class_hint = _normalize_text_value(
+        _first_present(payload, "asset_class_hint", "asset_class", "assetClass", "fund_asset_class")
+    )
+    domicile_country = _normalize_text_value(
+        _first_present(payload, "domicile_country", "domicile", "fund_domicile", "domicileCountry")
+    )
+    replication_method = _normalize_replication_method(
+        _first_present(payload, "replication_method", "replication", "replication_type", "replicationType")
+    )
+    hedged_flag = _coerce_optional_flag(_first_present(payload, "hedged_flag", "hedged", "currency_hedged"))
+    hedged_target = _normalize_text_value(
+        _first_present(payload, "hedged_target", "hedged_currency", "currency_hedged_to")
+    )
     if hedged_flag is None and hedged_target is not None:
         hedged_flag = 1
 

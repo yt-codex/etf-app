@@ -186,3 +186,51 @@ def test_refresh_product_profile_reads_metadata_from_cost_snapshot_raw_json() ->
     assert profile["replication_method"] == "physical"
     assert profile["hedged_flag"] == 1
     assert profile["hedged_target"] == "EUR"
+
+
+def test_refresh_product_profile_reads_metadata_from_parse_ongoing_payload() -> None:
+    conn = make_conn()
+    conn.execute(
+        """
+        INSERT INTO instrument(instrument_id, isin, instrument_name, ucits_flag, issuer_id, status, created_at, updated_at)
+        VALUES (3, 'IE00TEST0003', 'AVANTIS GLOBAL EQUITY UCITS ETF', 1, NULL, 'active', '2026-01-01', '2026-01-01')
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO cost_snapshot(instrument_id, asof_date, ongoing_charges, quality_flag, raw_json)
+        VALUES (3, '2026-03-02', 0.22, 'ok', ?)
+        """,
+        (
+            json.dumps(
+                {
+                    "source": "generic_kid",
+                    "parse_ongoing": {
+                        "benchmark_name": "MSCI World Index",
+                        "asset_class_hint": "Equity",
+                        "domicile_country": "Ireland",
+                        "replication_method": "Synthetic replication",
+                        "hedged_target": "USD",
+                    },
+                },
+                ensure_ascii=True,
+            ),
+        ),
+    )
+    ensure_instrument_cost_current_view(conn)
+
+    refresh_product_profile(conn)
+    profile = conn.execute(
+        """
+        SELECT benchmark_name, asset_class_hint, domicile_country, replication_method, hedged_flag, hedged_target
+        FROM product_profile
+        WHERE instrument_id = 3
+        """
+    ).fetchone()
+
+    assert profile["benchmark_name"] == "MSCI World Index"
+    assert profile["asset_class_hint"] == "Equity"
+    assert profile["domicile_country"] == "Ireland"
+    assert profile["replication_method"] == "synthetic"
+    assert profile["hedged_flag"] == 1
+    assert profile["hedged_target"] == "USD"
