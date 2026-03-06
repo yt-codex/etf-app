@@ -44,11 +44,31 @@ EUROPE_COUNTRIES = {
 
 SPECIAL_REPLACEMENTS: tuple[tuple[str, str], ...] = (
     (r"\bGLSMCV\b", "GLOBAL SMALL CAP VALUE"),
+    (r"\bGLBL\b", "GLOBAL"),
     (r"\bGLB\b", "GLOBAL"),
+    (r"\bGL[\.\s]EQ\b", "GLOBAL EQUITY"),
+    (r"\bEM[\.\s]EQ\b", "EMERGING MARKETS EQUITY"),
     (r"\bGEM\b", "EMERGING"),
     (r"\bWRLD\b", "WORLD"),
     (r"\bWLD\b", "WORLD"),
+    (r"\bSP500\b", "S P 500"),
+    (r"\bS&P500\b", "S P 500"),
+    (r"\bS P500\b", "S P 500"),
+    (r"\bNIK400\b", "NIKKEI 400"),
+    (r"\bTBILLS\b", "TREASURY BILLS"),
+    (r"\bTRES\b", "TREASURY"),
+    (r"\bBND\b", "BOND"),
+    (r"\bCRP\b", "CORP"),
+    (r"\bHY\b", "HIGH YIELD"),
+    (r"\bSHRT\b", "SHORT"),
+    (r"\bST[\.\s]DUR\b", "SHORT DURATION"),
+    (r"\bGVT\b", "GOVT"),
+    (r"\bEPE\b", "EUROPE"),
+    (r"\bERPE\b", "EUROPE"),
+    (r"\bSWITIT[0-9A-Z]*\b", "SWITZERLAND"),
     (r"S\+P", "S P"),
+    (r"S&P", "S P"),
+    (r"\bEUROSTOXX([0-9]+)\b", r"EURO STOXX \1"),
     (r"\bEOSTXX([0-9]+)\b", r"EURO STOXX \1"),
     (r"\bEOSTXX\b", "EURO STOXX"),
     (r"\bESTX\b", "EURO STOXX"),
@@ -69,15 +89,15 @@ PATTERNS = {
     "commodity_industrial_metals": [r"\bCOPPER\b", r"\bALUMIN(?:IUM|UM)\b", r"\bNICKEL\b", r"\bZINC\b"],
     "commodity_precious_metals": [r"\bPLATINUM\b", r"\bPALLADIUM\b"],
     "commodity_broad": [r"\bCOMMOD(?:ITY|ITIES)?\b", r"\bCMCI\b"],
-    "bond_core": [r"\bBOND(?:S)?\b", r"\bTREAS(?:URY)?\b", r"\bGOV(?:ERNMENT)?\b", r"\bGILT(?:S)?\b", r"\bCORP(?:ORATE)?\b", r"\bCREDIT\b", r"\bSOVEREIGN\b", r"\bAGG(?:REGATE)?\b", r"\bLINK(?:ED|ERS?)?\b", r"\bTIPS\b", r"\bREXX\b", r"\bPFANDBRIEFE\b", r"\bCOVERED\b"],
-    "bond_special": [r"I\.EB\.R\.", r"\bT[\s-]?BOND\b", r"\bT[\s-]?BND\b"],
+    "bond_core": [r"\bBOND(?:S)?\b", r"\bTREAS(?:URY)?\b", r"\bGOV(?:ERNMENT)?\b", r"\bGOVT\b", r"\bGILT(?:S)?\b", r"\bCORP(?:ORATE)?\b", r"\bCREDIT\b", r"\bSOVEREIGN\b", r"\bAGG(?:REGATE)?\b", r"\bLINK(?:ED|ERS?)?\b", r"\bTIPS\b", r"\bREXX\b", r"\bPFANDBRIEFE\b", r"\bCOVERED\b", r"\bFLOAT(?:ING)? RATE\b", r"\bFLOT RATE\b"],
+    "bond_special": [r"I\.EB\.R\.", r"\bT[\s-]?BOND\b", r"\bT[\s-]?BND\b", r"\bTR BOND\b", r"\bTR BND\b"],
     "bond_type_linkers": [r"\bINFLATION\b", r"\bLINK(?:ED|ERS?)?\b", r"\bTIPS\b"],
-    "bond_type_govt": [r"\bTREAS(?:URY)?\b", r"\bTRSY\b", r"\bTSY\b", r"\bGOV(?:ERNMENT)?\b", r"\bGOVT\b", r"\bGILT(?:S)?\b", r"\bSOVEREIGN\b", r"\bUST\b", r"\bJGB\b", r"\bBUND\b", r"\bOAT\b", r"\bBTP\b", r"\bTREASURY BILL\b", r"\bT[\s-]?BILL\b", r"\bPFANDBRIEFE\b", r"\bREXX\b", r"I\.EB\.R\."],
-    "bond_type_aggregate": [r"\bAGG(?:REGATE)?\b", r"\bTOTAL BOND\b"],
-    "bond_type_corp": [r"\bCORP(?:ORATE)?\b", r"\bCREDIT\b", r"\bHIGH YIELD\b", r"\bINVESTMENT GRADE\b"],
+    "bond_type_govt": [r"\bTREAS(?:URY)?\b", r"\bTRSY\b", r"\bTSY\b", r"\bGOV(?:ERNMENT)?\b", r"\bGOVT\b", r"\bGILT(?:S)?\b", r"\bSOVEREIGN\b", r"\bUST\b", r"\bJGB\b", r"\bBUND\b", r"\bOAT\b", r"\bBTP\b", r"\bTREASURY BILL\b", r"\bT[\s-]?BILL\b", r"\bPFANDBRIEFE\b", r"\bREXX\b", r"I\.EB\.R\.", r"\bTR BOND\b", r"\bTR BND\b"],
+    "bond_type_aggregate": [r"\bAGG(?:REGATE)?\b", r"\bTOTAL BOND\b", r"\bAGG BOND\b"],
+    "bond_type_corp": [r"\bCORP(?:ORATE)?\b", r"\bCREDIT\b", r"\bHIGH YIELD\b", r"\bINVESTMENT GRADE\b", r"\bCORP BOND\b"],
     "equity_hint": [r"\bMSCI\b", r"\bFTSE\b", r"\bSTOXX\b", r"\bEURO STOXX", r"\bS P\b", r"\bNASDAQ\b", r"\bRUSSELL\b", r"\bNIKKEI\b", r"\bTOPIX\b", r"\bDAX\b", r"\bDAX[0-9A-Z]*\b", r"\bMDAX\b", r"\bSDAX\b", r"\bTECDAX\b", r"\bDIVDAX\b", r"\bATX\b", r"\bSLI\b", r"\bSMI\b", r"\bSOFIX\b", r"\bCROBEX\b", r"\bPX\b", r"\bASE\b", r"\bBUX\b", r"\bMBI10\b", r"\bWIG20\b", r"\bSAX\b", r"\bSBI\b", r"\bBELEX\b", r"\bMIB\b", r"\bEMU\b", r"\bBRAZIL\b", r"\bSPAIN\b", r"\bUK\b", r"\bEU S 50\b", r"\bDOW JONES\b", r"\bDJIA\b", r"\bEQUITY\b", r"\bEQ\b", r"\bSHARES?\b", r"\bSTOCK\b", r"\bWORLD\b", r"\bGLOBAL\b", r"\bEMERGING\b", r"\bSMALL CAP\b", r"\bMID CAP\b", r"\bLARGE CAP\b", r"\bVALUE\b", r"\bGROWTH\b", r"\bQUALITY\b", r"\bMOMENTUM\b", r"\bDIVIDEND\b", r"\bEPI\b"],
-    "region_global": [r"\bWORLD\b", r"\bGLOBAL\b", r"\bACWI\b", r"\bALL COUNTRY\b"],
-    "region_em": [r"\bEMERGING\b", r"\bLATIN AMERICA\b", r"\bEM IMI\b"],
+    "region_global": [r"\bWORLD\b", r"\bGLOBAL\b", r"\bACWI\b", r"\bALL COUNTRY\b", r"\bALL WORLD\b"],
+    "region_em": [r"\bEMERGING\b", r"\bLATIN AMERICA\b", r"\bEM IMI\b", r"\bEM MARKETS?\b", r"\bMSCI EM\b", r"\bEM EQ\b"],
     "region_europe": [r"\bEUROPE\b", r"\bEU\b", r"\bEURO STOXX", r"\bEUROZONE\b", r"\bSTOXX EUROPE\b", r"\bEURO ST\b", r"\bEU 600\b", r"\bS E 600\b", r"\bEU S 50\b", r"\bEMU\b", r"\bMIB\b", r"\bEURO PRIME\b", r"\bSPAIN\b", r"\bUK\b"],
     "region_asia": [r"\bASIA\b", r"\bPACIFIC\b", r"\bASIA PACIFIC\b"],
     "sector_technology": [r"\bTECH(?:NOLOGY)?\b", r"\bTECDAX\b", r"\bSEMICONDUCTOR\b"],
@@ -101,16 +121,18 @@ PATTERNS = {
     "size_large": [r"\bLARGE CAP\b", r"\bDAX\b", r"\bS P 500\b", r"\bEURO STOXX 50\b", r"\bTOP 20\b"],
     "style_value": [r"\bVALUE\b", r"\bVAL\b"],
     "style_growth": [r"\bGROWTH\b"],
-    "duration_short": [r"\b0[\s/-]?1\b", r"\b1[\s/-]?3\b", r"\bSHORT\b", r"\bULTRA SHORT\b", r"\bT[\s-]?BILL\b"],
+    "duration_short": [r"\b0[\s/-]?1\b", r"\b1[\s/-]?3\b", r"\b0[\s/-]?6M\b", r"\b3[\s/-]?6M\b", r"\bSHORT\b", r"\bULTRA SHORT\b", r"\bT[\s-]?BILL\b", r"\bFLOAT(?:ING)? RATE\b", r"\bFLOT RATE\b", r"\bFRN\b"],
     "duration_intermediate": [r"\b3[\s/-]?7\b", r"\b5[\s/-]?10\b", r"\b7[\s/-]?10\b", r"\bINTERMEDIATE\b"],
     "duration_long": [r"\b10\+\b", r"\b15\+\b", r"\b20\+\b", r"\b30\+\b", r"\bLONG\b", r"\bLONG DATED\b"],
 }
 
 COUNTRY_RULES = (
-    ("United States", "us", [r"\bUSA\b", r"\bUS\b", r"\bS P 500\b", r"\bNASDAQ\b", r"\bRUSSELL\b", r"\bDOW JONES\b", r"\bDJIA\b"]),
+    ("United States", "us", [r"\bUSA\b", r"\bUS\b", r"\bS P 500\b", r"\bSP 500\b", r"\bS AND P 500\b", r"\bNASDAQ\b", r"\bRUSSELL\b", r"\bDOW JONES\b", r"\bDJIA\b"]),
     ("Germany", "europe", [r"\bDAX\b", r"\bDAX[0-9A-Z]*\b", r"\bMDAX\b", r"\bSDAX\b", r"\bTECDAX\b", r"\bDIVDAX\b", r"\bPFANDBRIEFE\b", r"\bREXX\b"]),
     ("Austria", "europe", [r"\bATX\b"]),
-    ("Switzerland", "europe", [r"\bSLI\b", r"\bSMI\b"]),
+    ("Switzerland", "europe", [r"\bSLI\b", r"\bSMI\b", r"\bSWITZERLAND\b", r"\bSWISS\b"]),
+    ("Luxembourg", "europe", [r"\bLUX(?:EMBOURG)?\b"]),
+    ("Netherlands", "europe", [r"\bAEX\b"]),
     ("Italy", "europe", [r"\bMIB\b"]),
     ("Bulgaria", "europe", [r"\bSOFIX\b", r"\bBULGARIA\b"]),
     ("Croatia", "europe", [r"\bCROBEX\b", r"\bCROAT(?:IA)?\b"]),
@@ -126,6 +148,7 @@ COUNTRY_RULES = (
     ("United Kingdom", "europe", [r"\bUK\b", r"\bFTSE 100\b", r"\bFTSE 250\b"]),
     ("Brazil", "em", [r"\bBRAZIL\b"]),
     ("Japan", "asia", [r"\bJAPAN\b", r"\bNIKKEI\b", r"\bTOPIX\b"]),
+    ("South Africa", "em", [r"\bSOUTH AFRICA\b", r"\bMSCI SA\b"]),
     ("China", "asia", [r"\bCHINA\b", r"\bCSI\b", r"\bHANG SENG\b"]),
     ("India", "asia", [r"\bINDIA\b"]),
     ("South Korea", "asia", [r"\bKOREA\b", r"\bKOSPI\b"]),
@@ -222,6 +245,15 @@ def _normalize_duration_source(name: str | None) -> str:
 
 
 def _parse_duration_bounds(source_text: str) -> tuple[Optional[float], Optional[float]]:
+    month_range_match = re.search(
+        r"\b(0|1|3|6|9|12)\s*[-/]\s*(1|3|6|9|12)\s*M(?:ONTHS?)?\b",
+        source_text,
+    )
+    if month_range_match:
+        low = float(month_range_match.group(1)) / 12.0
+        high = float(month_range_match.group(2)) / 12.0
+        if low <= high:
+            return low, high
     range_match = re.search(
         r"\b(0|1|3|5|7|10|15|20|25|30)\s*[-/]\s*(1|3|5|7|10|15|20|25|30)\s*(?:Y(?:EARS?)?|YR|Y)?\b",
         source_text,
@@ -426,10 +458,10 @@ def classify_instrument(
     asset_class = "unknown"
     if gold_flag == 1 or commodity_type:
         asset_class = "commodity"
-    elif cash_proxy_flag == 1:
-        asset_class = "cash"
     elif bond_flag:
         asset_class = "bond"
+    elif cash_proxy_flag == 1:
+        asset_class = "cash"
     elif multi_flag:
         asset_class = "multi"
     elif equity_hint or str(instrument_type or "").upper() == "ETF":
