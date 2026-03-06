@@ -152,3 +152,38 @@ def test_gold_miner_proxy_records_proxy_exclusion_evidence() -> None:
     assert result.asset_class == "equity"
     assert result.gold_flag == 0
     assert "commodity:gold_proxy_equity_excluded" in evidence["rules"]
+
+
+def test_classifies_abbreviated_world_equity_from_profile_metadata() -> None:
+    result = classify_instrument(
+        isin="LU1781541179",
+        instrument_name="AIS-ACMSCIWS U.ETFDLA",
+        instrument_type="ETF",
+        distribution_policy="Accumulating",
+        benchmark_name="MSCI World SRI Screened Index",
+        asset_class_hint="Equity",
+    )
+
+    assert result.asset_class == "equity"
+    assert result.geography_region == "global"
+
+
+def test_classifies_duration_and_hedge_from_profile_metadata() -> None:
+    result = classify_instrument(
+        isin="LU0000000001",
+        instrument_name="AMUNDI PRIME US TREAS UCITS ETF DR (D)",
+        instrument_type="ETF",
+        distribution_policy="Distributing",
+        benchmark_name="Solactive US Treasury Bond 1-3 Year Index",
+        asset_class_hint="Bond",
+        domicile_country="Luxembourg",
+        hedged_flag=1,
+        hedged_target="GBP",
+    )
+
+    assert result.asset_class == "bond"
+    assert result.bond_type == "govt"
+    assert result.duration_bucket == "short"
+    assert result.domicile_country == "Luxembourg"
+    assert result.hedged_flag == 1
+    assert result.hedged_target == "GBP"

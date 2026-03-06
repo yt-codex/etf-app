@@ -23,6 +23,46 @@ ISHARES_SOURCE = "ishares_product_page"
 
 SEARCH_URL = "https://www.ishares.com/uk/individual/en/products"
 AUTOCOMPLETE_URL = "https://www.ishares.com/uk/individual/en/autoComplete.search"
+AUTOCOMPLETE_CANDIDATE_LIMIT = 12
+VERIFICATION_CANDIDATE_LIMIT = 10
+
+DISCOVERY_NAME_REPLACEMENTS: tuple[tuple[str, str], ...] = (
+    (r"\bISHRS\b", "ISHARES"),
+    (r"\bISHS\b", "ISHARES"),
+    (r"\bU\.?ETF\b", "UCITS ETF"),
+    (r"\bUCT\b", "UCITS"),
+    (r"\bUCTS\b", "UCITS"),
+    (r"\bUC\.?E\.?ACC\b", "UCITS ETF ACC"),
+    (r"\bUC\.?E\.?DIST\b", "UCITS ETF DIST"),
+    (r"\bUC\.?E\.?DIS\b", "UCITS ETF DIST"),
+    (r"\bC\.BD\b", "CORP BOND"),
+    (r"\bCORP BD\b", "CORP BOND"),
+    (r"\bGOV BD\b", "GOV BOND"),
+    (r"\bTRSY\b", "TREASURY"),
+    (r"\bN\.AMERICA\b", "NORTH AMERICA"),
+    (r"\bLGE CAP\b", "LARGE CAP"),
+    (r"\bS\+P\b", "S&P"),
+)
+
+DISCOVERY_STRIP_PATTERNS: tuple[str, ...] = (
+    r"\bISHARES\b",
+    r"\bCORE\b",
+    r"\bEDGE\b",
+    r"\bUCITS\b",
+    r"\bETF\b",
+    r"\bUSD\b",
+    r"\bEUR\b",
+    r"\bGBP\b",
+    r"\bJPY\b",
+    r"\bCHF\b",
+    r"\bACC\b",
+    r"\bDIST\b",
+    r"\bDIS\b",
+    r"\bHEDGED\b",
+    r"\bHDG\b",
+    r"\b\(ACC\)\b",
+    r"\b\(DIST\)\b",
+)
 
 
 @dataclass
@@ -360,6 +400,79 @@ def discover_candidates_by_isin(client: HttpClient, isin: str) -> tuple[list[str
     return candidates, debug
 
 
+def discover_candidates_for_instrument(
+    client: HttpClient,
+    *,
+    isin: str,
+    ticker: Optional[str],
+    instrument_name: Optional[str],
+) -> tuple[list[str], dict[str, object]]:
+    debug: dict[str, object] = {}
+    candidates_by_url: dict[str, dict[str, object]] = {}
+    search_terms = build_discovery_search_terms(isin=isin, ticker=ticker, instrument_name=instrument_name)
+    debug["search_terms"] = search_terms
+
+    for term in search_terms:
+        term_debug: dict[str, object] = {"term": term}
+        response = client.get(
+            AUTOCOMPLETE_URL,
+            params={"type": "autocomplete", "term": term, "siteEntryPassthrough": "true"},
+        )
+        term_debug["status"] = response.status_code
+        term_debug["content_type"] = response.content_type
+        if not response.ok or not response.text:
+            term_debug["error"] = response.error
+            debug.setdefault("term_attempts", []).append(term_debug)
+            continue
+
+        if "json" not in str(response.content_type or "").lower():
+            term_debug["error"] = f"unexpected_content_type:{response.content_type}"
+            debug.setdefault("term_attempts", []).append(term_debug)
+            continue
+
+        try:
+            payload = json.loads(response.text)
+        except json.JSONDecodeError:
+            term_debug["error"] = "invalid_json"
+            debug.setdefault("term_attempts", []).append(term_debug)
+            continue
+
+        accepted: list[dict[str, object]] = []
+        for item in payload[:AUTOCOMPLETE_CANDIDATE_LIMIT]:
+            if str(item.get("category") or "") != "productAutocomplete":
+                continue
+            raw_url = str(item.get("id") or "").strip()
+            if "/products/" not in raw_url:
+                continue
+            absolute = canonical_product_url(urljoin("https://www.ishares.com", raw_url))
+            label = normalize_space(str(item.get("label") or ""))
+            score = score_autocomplete_candidate(
+                label=label,
+                instrument_name=instrument_name,
+                ticker=ticker,
+                search_term=term,
+            )
+            accepted.append({"label": label, "url": absolute, "score": score})
+            current = candidates_by_url.get(absolute)
+            if current is None or score > int(current["score"]):
+                candidates_by_url[absolute] = {
+                    "url": absolute,
+                    "label": label,
+                    "score": score,
+                    "term": term,
+                }
+
+        term_debug["candidates"] = accepted[:8]
+        debug.setdefault("term_attempts", []).append(term_debug)
+
+    ranked = sorted(
+        candidates_by_url.values(),
+        key=lambda item: (-int(item["score"]), str(item["label"]), str(item["url"])),
+    )
+    debug["ranked_candidates"] = ranked[:VERIFICATION_CANDIDATE_LIMIT]
+    return [str(item["url"]) for item in ranked[:VERIFICATION_CANDIDATE_LIMIT]], debug
+
+
 def verify_candidate_for_isin(
     client: HttpClient,
     candidate_url: str,
@@ -401,6 +514,86 @@ def normalize_space(value: Optional[str]) -> str:
     if not value:
         return ""
     return re.sub(r"\s+", " ", value).strip()
+
+
+def normalize_discovery_name(value: Optional[str]) -> str:
+    text = normalize_space(value)
+    if not text:
+        return ""
+    text = text.upper().replace("&", " AND ")
+    for pattern, replacement in DISCOVERY_NAME_REPLACEMENTS:
+        text = re.sub(pattern, replacement, text)
+    text = re.sub(r"[^A-Z0-9$&+()/-]+", " ", text)
+    return normalize_space(text)
+
+
+def build_discovery_search_terms(
+    *,
+    isin: str,
+    ticker: Optional[str],
+    instrument_name: Optional[str],
+) -> list[str]:
+    terms: list[str] = []
+    raw_name = normalize_space(instrument_name)
+    normalized_name = normalize_discovery_name(instrument_name)
+    benchmark_fragment = normalized_name
+    for pattern in DISCOVERY_STRIP_PATTERNS:
+        benchmark_fragment = re.sub(pattern, " ", benchmark_fragment)
+    benchmark_fragment = normalize_space(benchmark_fragment)
+
+    for candidate in (
+        isin.strip().upper(),
+        normalize_space(ticker).upper(),
+        raw_name,
+        normalized_name,
+        benchmark_fragment,
+        f"ISHARES {benchmark_fragment}" if benchmark_fragment else "",
+        f"ISHARES CORE {benchmark_fragment}" if benchmark_fragment and "CORE" not in normalized_name else "",
+    ):
+        candidate = normalize_space(candidate)
+        if not candidate:
+            continue
+        if candidate not in terms:
+            terms.append(candidate)
+    return terms[:6]
+
+
+def normalize_candidate_match_text(value: Optional[str]) -> str:
+    text = normalize_discovery_name(value)
+    text = re.sub(r"\bDIST(RIBUTING)?\b", "DIST", text)
+    text = re.sub(r"\bACC(UMULATING)?\b", "ACC", text)
+    return normalize_space(text)
+
+
+def score_autocomplete_candidate(
+    *,
+    label: str,
+    instrument_name: Optional[str],
+    ticker: Optional[str],
+    search_term: str,
+) -> int:
+    normalized_label = normalize_candidate_match_text(label)
+    normalized_name = normalize_candidate_match_text(instrument_name)
+    normalized_term = normalize_candidate_match_text(search_term)
+    label_tokens = {token for token in normalized_label.split() if len(token) > 1}
+    name_tokens = {token for token in normalized_name.split() if len(token) > 1}
+    term_tokens = {token for token in normalized_term.split() if len(token) > 1}
+    overlap = len(label_tokens & name_tokens)
+    score = overlap * 5 + len(label_tokens & term_tokens) * 3
+
+    ticker_token = normalize_space(ticker).upper()
+    if ticker_token and ticker_token == normalize_space(search_term).upper():
+        score += 8
+
+    if " DIST" in f" {normalized_label} " and " DIST" in f" {normalized_name} ":
+        score += 4
+    if " ACC" in f" {normalized_label} " and " ACC" in f" {normalized_name} ":
+        score += 4
+    if normalized_term and normalized_term in normalized_label:
+        score += 6
+    if normalized_name and normalized_label == normalized_name:
+        score += 12
+    return score
 
 
 def parse_percent(value: str) -> Optional[float]:
@@ -659,15 +852,27 @@ def maybe_update_product_profile(
         return False
     if not table_has_column(conn, "product_profile", "instrument_id"):
         return False
-    conn.execute(
-        """
-        INSERT INTO product_profile(instrument_id, distribution_policy)
-        VALUES (?, ?)
-        ON CONFLICT(instrument_id) DO UPDATE SET
-            distribution_policy = excluded.distribution_policy
-        """,
-        (instrument_id, use_of_income),
-    )
+    if table_has_column(conn, "product_profile", "updated_at"):
+        conn.execute(
+            """
+            INSERT INTO product_profile(instrument_id, distribution_policy, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(instrument_id) DO UPDATE SET
+                distribution_policy = excluded.distribution_policy,
+                updated_at = excluded.updated_at
+            """,
+            (instrument_id, use_of_income, now_utc_iso()),
+        )
+    else:
+        conn.execute(
+            """
+            INSERT INTO product_profile(instrument_id, distribution_policy)
+            VALUES (?, ?)
+            ON CONFLICT(instrument_id) DO UPDATE SET
+                distribution_policy = excluded.distribution_policy
+            """,
+            (instrument_id, use_of_income),
+        )
     return True
 
 
@@ -736,7 +941,12 @@ def main(argv: list[str]) -> int:
                 debug["url_source"] = "existing_map_or_logs"
 
             if not product_url and not args.reuse_only:
-                candidates, discovery_debug = discover_candidates_by_isin(client, isin)
+                candidates, discovery_debug = discover_candidates_for_instrument(
+                    client,
+                    isin=isin,
+                    ticker=ticker,
+                    instrument_name=str(row["instrument_name"] or ""),
+                )
                 debug["discovery"] = discovery_debug
                 debug["candidate_count"] = len(candidates)
                 for candidate in candidates:

@@ -487,6 +487,90 @@ def extract_ucits(text: str, lines: list[str]) -> tuple[Optional[int], Optional[
     return None, None
 
 
+def normalize_country_name(value: Optional[str]) -> Optional[str]:
+    text = normalize_space(value)
+    if not text:
+        return None
+    return text.title()
+
+
+def normalize_replication_method(value: Optional[str]) -> Optional[str]:
+    text = normalize_space(value)
+    if not text:
+        return None
+    upper = text.upper()
+    if "PHYSICAL" in upper:
+        return "physical"
+    if "SYNTHETIC" in upper or "SWAP" in upper:
+        return "synthetic"
+    return text
+
+
+def parse_hedged_metadata(text: str) -> tuple[Optional[int], Optional[str]]:
+    normalized = normalize_space(text).upper()
+    if not normalized:
+        return None, None
+    if "UNHEDGED" in normalized:
+        return 0, None
+    target_match = re.search(r"\b(USD|EUR|GBP|JPY|CHF)\s+(?:HDG|HEDGED)\b", normalized)
+    if target_match:
+        return 1, target_match.group(1)
+    if "HEDGED" in normalized or " HDG" in f" {normalized} ":
+        return 1, None
+    return None, None
+
+
+def extract_profile_metadata_from_factsheet(text: str, lines: list[str]) -> dict[str, object]:
+    normalized = normalize_space(text)
+
+    benchmark_name: Optional[str] = None
+    benchmark_match = re.search(
+        r"\bBenchmark\s*:\s*(.+?)(?:Date of the\s+(?:first|rst)\s+NAV|First NAV|Key Information|Objective and Investment Policy|$)",
+        normalized,
+        flags=re.IGNORECASE,
+    )
+    if benchmark_match:
+        benchmark_name = normalize_space(benchmark_match.group(1))
+        benchmark_name = re.sub(r"^[0-9]+(?:[.,][0-9]+)?%\s*", "", benchmark_name)
+
+    asset_class_hint: Optional[str] = None
+    asset_match = re.search(
+        r"\bAsset class\s*:\s*(.+?)(?:Exposure\s*:|Information\s*\(|Fund structure\b|$)",
+        normalized,
+        flags=re.IGNORECASE,
+    )
+    if asset_match:
+        asset_class_hint = normalize_space(asset_match.group(1))
+    elif lines and lines[0].upper() in {"EQUITY", "BOND", "COMMODITY", "MULTI ASSET", "MONEY MARKET"}:
+        asset_class_hint = lines[0].title()
+
+    domicile_country: Optional[str] = None
+    domicile_match = re.search(
+        r"\bFund structure\b.*?\bunder\s+([A-Za-z ]+?)\s+law\b",
+        normalized,
+        flags=re.IGNORECASE,
+    )
+    if domicile_match:
+        domicile_country = normalize_country_name(domicile_match.group(1))
+
+    replication_match = re.search(
+        r"\bReplication type\s*:\s*(.+?)(?:Benchmark\s*:|Date of the\s+(?:first|rst)\s+NAV|First NAV|Asset class\s*:|$)",
+        normalized,
+        flags=re.IGNORECASE,
+    )
+    replication_method = normalize_replication_method(replication_match.group(1) if replication_match else None)
+    hedged_flag, hedged_target = parse_hedged_metadata(normalized)
+
+    return {
+        "benchmark_name": benchmark_name,
+        "asset_class_hint": asset_class_hint,
+        "domicile_country": domicile_country,
+        "replication_method": replication_method,
+        "hedged_flag": hedged_flag,
+        "hedged_target": hedged_target,
+    }
+
+
 def parse_factsheet_pdf(pdf_bytes: bytes) -> dict[str, object]:
     text_meta = extract_pdf_text_with_fallback(pdf_bytes)
     text = str(text_meta.get("text") or "")
@@ -495,11 +579,18 @@ def parse_factsheet_pdf(pdf_bytes: bytes) -> dict[str, object]:
     fee, fee_line = extract_fee(text, lines)
     distribution, distribution_line = extract_distribution(text, lines)
     ucits, ucits_line = extract_ucits(text, lines)
+    profile_metadata = extract_profile_metadata_from_factsheet(text, lines)
 
     return {
         "ter": fee,
         "use_of_income": distribution,
         "ucits_compliant": ucits,
+        "benchmark_name": profile_metadata.get("benchmark_name"),
+        "asset_class_hint": profile_metadata.get("asset_class_hint"),
+        "domicile_country": profile_metadata.get("domicile_country"),
+        "replication_method": profile_metadata.get("replication_method"),
+        "hedged_flag": profile_metadata.get("hedged_flag"),
+        "hedged_target": profile_metadata.get("hedged_target"),
         "matched_fee_line": fee_line,
         "matched_distribution_line": distribution_line,
         "matched_ucits_line": ucits_line,
@@ -635,15 +726,27 @@ def maybe_update_product_profile(conn: sqlite3.Connection, instrument_id: int, u
         return False
     if not table_has_column(conn, "product_profile", "instrument_id"):
         return False
-    conn.execute(
-        """
-        INSERT INTO product_profile(instrument_id, distribution_policy)
-        VALUES (?, ?)
-        ON CONFLICT(instrument_id) DO UPDATE SET
-            distribution_policy = excluded.distribution_policy
-        """,
-        (instrument_id, use_of_income),
-    )
+    if table_has_column(conn, "product_profile", "updated_at"):
+        conn.execute(
+            """
+            INSERT INTO product_profile(instrument_id, distribution_policy, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(instrument_id) DO UPDATE SET
+                distribution_policy = excluded.distribution_policy,
+                updated_at = excluded.updated_at
+            """,
+            (instrument_id, use_of_income, now_utc_iso()),
+        )
+    else:
+        conn.execute(
+            """
+            INSERT INTO product_profile(instrument_id, distribution_policy)
+            VALUES (?, ?)
+            ON CONFLICT(instrument_id) DO UPDATE SET
+                distribution_policy = excluded.distribution_policy
+            """,
+            (instrument_id, use_of_income),
+        )
     return True
 
 
@@ -909,6 +1012,12 @@ def main(argv: list[str]) -> int:
                 "ter": ter,
                 "use_of_income": use_of_income,
                 "ucits_compliant": ucits_compliant,
+                "benchmark_name": parsed.get("benchmark_name"),
+                "asset_class_hint": parsed.get("asset_class_hint"),
+                "domicile_country": parsed.get("domicile_country"),
+                "replication_method": parsed.get("replication_method"),
+                "hedged_flag": parsed.get("hedged_flag"),
+                "hedged_target": parsed.get("hedged_target"),
                 "matched_fee_line": parsed.get("matched_fee_line"),
                 "matched_distribution_line": parsed.get("matched_distribution_line"),
                 "matched_ucits_line": parsed.get("matched_ucits_line"),

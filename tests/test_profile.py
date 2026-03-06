@@ -137,3 +137,52 @@ def test_refresh_product_profile_backfills_current_fields() -> None:
     assert profile["replication_method"] == "physical"
     assert profile["hedged_flag"] == 1
     assert profile["hedged_target"] == "GBP"
+
+
+def test_refresh_product_profile_reads_metadata_from_cost_snapshot_raw_json() -> None:
+    conn = make_conn()
+    conn.execute(
+        """
+        INSERT INTO instrument(instrument_id, isin, instrument_name, ucits_flag, issuer_id, status, created_at, updated_at)
+        VALUES (2, 'IE00TEST0002', 'XTRACKERS MSCI WORLD INF TECH UCITS ETF', 1, NULL, 'active', '2026-01-01', '2026-01-01')
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO cost_snapshot(instrument_id, asof_date, ongoing_charges, quality_flag, raw_json)
+        VALUES (2, '2026-03-02', 0.19, 'ok', ?)
+        """,
+        (
+            json.dumps(
+                {
+                    "parse": {
+                        "benchmark_name": "MSCI World Information Technology 20/35 Custom Index",
+                        "asset_class_hint": "Equity",
+                        "domicile_country": "Ireland",
+                        "replication_method": "physical",
+                        "hedged_flag": 1,
+                        "hedged_target": "EUR",
+                    }
+                },
+                ensure_ascii=True,
+            ),
+        ),
+    )
+    ensure_instrument_cost_current_view(conn)
+
+    stats = refresh_product_profile(conn)
+    profile = conn.execute(
+        """
+        SELECT benchmark_name, asset_class_hint, domicile_country, replication_method, hedged_flag, hedged_target
+        FROM product_profile
+        WHERE instrument_id = 2
+        """
+    ).fetchone()
+
+    assert stats.metadata_synced == 1
+    assert profile["benchmark_name"] == "MSCI World Information Technology 20/35 Custom Index"
+    assert profile["asset_class_hint"] == "Equity"
+    assert profile["domicile_country"] == "Ireland"
+    assert profile["replication_method"] == "physical"
+    assert profile["hedged_flag"] == 1
+    assert profile["hedged_target"] == "EUR"

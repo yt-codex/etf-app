@@ -304,21 +304,10 @@ def _extract_profile_metadata_from_payload(payload: dict[str, object]) -> dict[s
     return extracted
 
 
-def _load_latest_profile_metadata(conn: sqlite3.Connection) -> dict[int, dict[str, object]]:
-    try:
-        rows = conn.execute(
-            """
-            SELECT instrument_id, raw_json
-            FROM issuer_metadata_snapshot
-            WHERE raw_json IS NOT NULL
-              AND TRIM(raw_json) <> ''
-            ORDER BY asof_date DESC, id DESC
-            """
-        ).fetchall()
-    except sqlite3.OperationalError:
-        return {}
-
-    per_instrument: dict[int, dict[str, object]] = {}
+def _merge_profile_metadata_rows(
+    rows: list[sqlite3.Row],
+    per_instrument: dict[int, dict[str, object]],
+) -> None:
     for row in rows:
         instrument_id = int(row["instrument_id"])
         try:
@@ -345,6 +334,37 @@ def _load_latest_profile_metadata(conn: sqlite3.Connection) -> dict[int, dict[st
                 continue
             if current.get(key) is None:
                 current[key] = value
+
+
+def _load_latest_profile_metadata(conn: sqlite3.Connection) -> dict[int, dict[str, object]]:
+    per_instrument: dict[int, dict[str, object]] = {}
+    try:
+        issuer_rows = conn.execute(
+            """
+            SELECT instrument_id, raw_json
+            FROM issuer_metadata_snapshot
+            WHERE raw_json IS NOT NULL
+              AND TRIM(raw_json) <> ''
+            ORDER BY asof_date DESC, id DESC
+            """
+        ).fetchall()
+    except sqlite3.OperationalError:
+        issuer_rows = []
+    _merge_profile_metadata_rows(issuer_rows, per_instrument)
+
+    try:
+        cost_rows = conn.execute(
+            """
+            SELECT instrument_id, raw_json
+            FROM cost_snapshot
+            WHERE raw_json IS NOT NULL
+              AND TRIM(raw_json) <> ''
+            ORDER BY asof_date DESC, cost_id DESC
+            """
+        ).fetchall()
+    except sqlite3.OperationalError:
+        cost_rows = []
+    _merge_profile_metadata_rows(cost_rows, per_instrument)
     return per_instrument
 
 

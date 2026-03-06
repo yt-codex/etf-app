@@ -1209,6 +1209,103 @@ def detect_effective_date(text: str) -> Optional[str]:
     return None
 
 
+def _normalize_profile_country(value: Optional[str]) -> Optional[str]:
+    text = normalize_space(value)
+    if not text:
+        return None
+    return text.title()
+
+
+def extract_profile_metadata_from_text(text: str) -> dict[str, object]:
+    normalized = normalize_space(text)
+    upper = normalized.upper()
+    header_window = normalized[:800]
+    objective_window = normalized[:3000]
+
+    benchmark_name: Optional[str] = None
+    for pattern in (
+        r"reflect the performance, before fees and expenses, of (?:the )?(.+?) \(index\)",
+        r"track the performance(?:, before fees and expenses,)? of (?:the )?(.+?)(?:\.|,)",
+        r"underlying index(?: is| shall be)? (.+?)(?:\.|,)",
+    ):
+        match = re.search(pattern, normalized, flags=re.IGNORECASE)
+        if match:
+            benchmark_name = normalize_space(match.group(1))
+            break
+    if benchmark_name and not re.search(
+        r"\b(INDEX|MSCI|FTSE|STOXX|S&P|NASDAQ|RUSSELL|SOLACTIVE|BLOOMBERG|MARKIT|MORNINGSTAR|NIKKEI|TOPIX|ICE|JP MORGAN)\b",
+        benchmark_name.upper(),
+    ):
+        benchmark_name = None
+
+    domicile_country: Optional[str] = None
+    domicile_patterns = (
+        ("Ireland", (r"\bIRISH BASED UCITS\b", r"\bauthori[sz]ed in Ireland\b", r"\bunder the laws of Ireland\b")),
+        ("Luxembourg", (r"\bauthori[sz]ed in Luxembourg\b", r"\bunder the laws of Luxembourg\b")),
+        ("France", (r"\bauthori[sz]ed in France\b", r"\bunder the laws of France\b")),
+        ("Germany", (r"\bauthori[sz]ed in Germany\b", r"\bunder the laws of Germany\b")),
+        ("United Kingdom", (r"\bauthori[sz]ed in the United Kingdom\b", r"\bunder the laws of the United Kingdom\b")),
+        ("Jersey", (r"\bauthori[sz]ed in Jersey\b", r"\bunder the laws of Jersey\b")),
+        ("Switzerland", (r"\bauthori[sz]ed in Switzerland\b", r"\bunder the laws of Switzerland\b")),
+        ("Netherlands", (r"\bauthori[sz]ed in the Netherlands\b", r"\bunder the laws of the Netherlands\b")),
+    )
+    for country, patterns in domicile_patterns:
+        if any(re.search(pattern, normalized, flags=re.IGNORECASE) for pattern in patterns):
+            domicile_country = country
+            break
+
+    asset_class_hint: Optional[str] = None
+    benchmark_upper = (benchmark_name or "").upper()
+    if re.search(r"\b(COMMODITY|GOLD|SILVER|BULLION)\b", benchmark_upper):
+        asset_class_hint = "Commodity"
+    elif re.search(r"\b(BOND|TREASURY|GILT|FIXED INCOME|CREDIT|AGGREGATE)\b", benchmark_upper):
+        asset_class_hint = "Bond"
+    elif re.search(r"\b(MSCI|FTSE|STOXX|S&P|NASDAQ|RUSSELL|NIKKEI|TOPIX)\b", benchmark_upper):
+        asset_class_hint = "Equity"
+    elif re.search(r"\b(COMMODITY|GOLD|SILVER|BULLION)\b", objective_window, flags=re.IGNORECASE):
+        asset_class_hint = "Commodity"
+    elif re.search(r"\b(MONEY MARKET|CASH EQUIVALENT)\b", objective_window, flags=re.IGNORECASE):
+        asset_class_hint = "Cash"
+    elif re.search(r"\b(SHARES?|EQUITY|STOCKS?|LISTED COMPANIES)\b", objective_window, flags=re.IGNORECASE):
+        asset_class_hint = "Equity"
+    elif re.search(r"\b(BONDS?|TREASURY|GILT|FIXED INCOME|CREDIT)\b", objective_window, flags=re.IGNORECASE):
+        asset_class_hint = "Bond"
+    elif re.search(r"\b(MULTI[- ]ASSET|BALANCED|PORTFOLIO)\b", header_window, flags=re.IGNORECASE):
+        asset_class_hint = "Multi"
+
+    replication_method: Optional[str] = None
+    if re.search(r"\b(SWAP|SYNTHETIC)\b", upper):
+        replication_method = "synthetic"
+    elif re.search(
+        r"attempt to replicate the index.*?by buying all or a substantial number of the securities",
+        normalized,
+        flags=re.IGNORECASE,
+    ) or re.search(r"\bPHYSICAL REPLICATION\b", upper):
+        replication_method = "physical"
+
+    hedged_flag: Optional[int] = None
+    hedged_target: Optional[str] = None
+    if "UNHEDGED" in upper:
+        hedged_flag = 0
+    else:
+        hedge_match = re.search(
+            r"\b(USD|EUR|GBP|JPY|CHF)\s+HEDGED\b|\bHEDGED\b.*?\b(USD|EUR|GBP|JPY|CHF)\b",
+            upper,
+        )
+        if hedge_match:
+            hedged_flag = 1
+            hedged_target = hedge_match.group(1) or hedge_match.group(2)
+
+    return {
+        "benchmark_name": benchmark_name,
+        "asset_class_hint": asset_class_hint,
+        "domicile_country": domicile_country,
+        "replication_method": replication_method,
+        "hedged_flag": hedged_flag,
+        "hedged_target": hedged_target,
+    }
+
+
 def parse_ongoing_charges(pdf_bytes: bytes) -> dict[str, object]:
     result = {
         "ongoing_charges": None,
@@ -1224,6 +1321,12 @@ def parse_ongoing_charges(pdf_bytes: bytes) -> dict[str, object]:
         "extractor": None,
         "fallback_used": False,
         "extractor_errors": [],
+        "benchmark_name": None,
+        "asset_class_hint": None,
+        "domicile_country": None,
+        "replication_method": None,
+        "hedged_flag": None,
+        "hedged_target": None,
         "error": None,
     }
     try:
@@ -1254,6 +1357,9 @@ def parse_ongoing_charges(pdf_bytes: bytes) -> dict[str, object]:
             text, [r"transaction\s+costs?", r"portfolio\s+transaction\s+costs?"], window=240
         )
         result["effective_date"] = detect_effective_date(text)
+        profile_metadata = extract_profile_metadata_from_text(text)
+        for key, value in profile_metadata.items():
+            result[key] = value
 
         if keyword_idx is not None:
             result["snippet"] = text[max(0, keyword_idx - 500) : min(len(text), keyword_idx + 500)]
