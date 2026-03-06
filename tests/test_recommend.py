@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from etf_app.recommend import match_bucket
+from etf_app.recommend import match_bucket, summarize_gold_policy
 from etf_app.taxonomy import classify_instrument
 
 
@@ -74,3 +74,29 @@ def test_trsy_abbreviation_classifies_as_govt_bond() -> None:
     assert result.asset_class == "bond"
     assert result.bond_type == "govt"
     assert result.duration_bucket == "short"
+
+
+def test_gold_bucket_accepts_physical_gold_commodity() -> None:
+    ok, reasons = match_bucket(
+        "gold",
+        make_row(
+            instrument_name="ISHARES PHYSICAL GOLD ETC",
+            asset_class="commodity",
+            commodity_type="gold",
+        ),
+    )
+    assert ok is True
+    assert reasons == ["asset_class=commodity", "commodity_type=gold"]
+
+
+def test_gold_policy_summary_explains_strict_ucits_gap() -> None:
+    summary = summarize_gold_policy(
+        eligible_ucits_gold_count=0,
+        excluded_non_ucits_gold_count=3,
+        ignored_gold_equity_proxy_count=2,
+    )
+    assert summary.policy_name == "strict_ucits_only"
+    assert summary.eligible_ucits_gold_count == 0
+    assert "No eligible UCITS gold commodity instrument was found" in summary.note
+    assert "3 non-UCITS physical gold instrument(s) were excluded" in summary.note
+    assert "2 gold miner/producer equity proxy instrument(s) were ignored" in summary.note

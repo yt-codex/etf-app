@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 from etf_app.taxonomy import classify_instrument
 
 
@@ -62,3 +64,28 @@ def test_classifies_jpm_global_eq_abbreviation() -> None:
     )
     assert result.asset_class == "equity"
     assert result.geography_region == "global"
+
+
+def test_classifies_physical_gold_etc_as_gold_commodity() -> None:
+    result = classify_instrument(
+        isin="IE00B4ND3602",
+        instrument_name="ISHARES PHYSICAL GOLD ETC",
+        instrument_type="ETC",
+        distribution_policy=None,
+    )
+    assert result.asset_class == "commodity"
+    assert result.commodity_type == "gold"
+    assert result.gold_flag == 1
+
+
+def test_gold_miner_proxy_records_proxy_exclusion_evidence() -> None:
+    result = classify_instrument(
+        isin="IE00B6R52036",
+        instrument_name="ISHRS GOLD PRODUCERS ETF USD (ACC)",
+        instrument_type="ETF",
+        distribution_policy="Accumulating",
+    )
+    evidence = json.loads(result.evidence_json)
+    assert result.asset_class == "equity"
+    assert result.gold_flag == 0
+    assert "commodity:gold_proxy_equity_excluded" in evidence["rules"]

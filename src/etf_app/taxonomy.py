@@ -209,6 +209,10 @@ def _is_gold_equity_proxy(source_text: str) -> bool:
     return _has_any(source_text, GOLD_EQUITY_PROXY_PATTERNS)
 
 
+def _has_gold_commodity_exposure(source_text: str) -> bool:
+    return (not _is_gold_equity_proxy(source_text)) and _has_any(source_text, COMPILED_PATTERNS["commodity_gold"])
+
+
 def _normalize_duration_source(name: str | None) -> str:
     if not name:
         return ""
@@ -298,10 +302,13 @@ def classify_instrument(
     source_text = _normalize_duration_source(instrument_name)
     evidence: list[str] = []
 
+    gold_keyword_detected = _has_any(source_text, COMPILED_PATTERNS["commodity_gold"])
     gold_flag = 0
-    if (not _is_gold_equity_proxy(source_text)) and _has_any(source_text, COMPILED_PATTERNS["commodity_gold"]):
+    if _has_gold_commodity_exposure(source_text):
         gold_flag = 1
         evidence.append("commodity:gold")
+    elif gold_keyword_detected and _is_gold_equity_proxy(source_text):
+        evidence.append("commodity:gold_proxy_equity_excluded")
 
     commodity_type: Optional[str] = None
     for commodity_name, key in (

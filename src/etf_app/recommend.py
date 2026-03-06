@@ -11,13 +11,14 @@ from pathlib import Path
 from typing import Optional
 
 from etf_app.profile import ensure_instrument_cost_current_view, ensure_product_profile_schema
-from etf_app.taxonomy import ensure_taxonomy_schema, load_universe_rows, upsert_taxonomy
+from etf_app.taxonomy import classify_instrument, ensure_taxonomy_schema, load_universe_rows, upsert_taxonomy
 
 
 ALL_VENUES = ("XLON", "XETR")
 NAME_EXCLUSION_TOKENS = ("ETP", "ETN", "NOTE")
 ISSUER_DENYLIST = ("LEVERAGE SHARES",)
 SMALL_CAP_VALUE_ISINS = {"IE0003R87OG3"}
+GOLD_BUCKET_POLICY = "strict_ucits_only"
 
 THEMATIC_NAME_PATTERNS = (
     r"\bWATER\b",
@@ -101,6 +102,15 @@ class AttemptConfig:
     venue_scope: str = "selected"
     allow_missing_fees: bool = False
     match_mode: str = "strict"
+
+
+@dataclass(frozen=True)
+class GoldPolicySummary:
+    policy_name: str
+    eligible_ucits_gold_count: int
+    excluded_non_ucits_gold_count: int
+    ignored_gold_equity_proxy_count: int
+    note: str
 
 
 BUCKET_ATTEMPTS: dict[str, tuple[AttemptConfig, ...]] = {
@@ -273,6 +283,10 @@ def has_non_core_global_modifier(name: str | None) -> bool:
 
 def has_gold_equity_proxy_name(name: str | None) -> bool:
     return has_pattern(name, COMPILED_GOLD_EQUITY_PROXY_PATTERNS)
+
+
+def has_gold_like_name(name: str | None) -> bool:
+    return bool(re.search(r"\b(GOLD|BULLION)\b", normalize_name_for_match(name)))
 
 
 def name_implies_leverage_inverse(name: str) -> bool:
@@ -542,6 +556,8 @@ def to_output_row(
             "isin": row["isin"],
         },
     }
+    if bucket_name == "gold":
+        selection_reason["bucket_policy"] = GOLD_BUCKET_POLICY
     return {
         "strategy_name": strategy_name,
         "bucket_name": bucket_name,
@@ -576,6 +592,101 @@ def effective_venues(selected_venues: list[str], venue_scope_name: str) -> list[
     if venue_scope_name == "all":
         return list(ALL_VENUES)
     return list(selected_venues)
+
+
+def summarize_gold_policy(
+    *,
+    eligible_ucits_gold_count: int,
+    excluded_non_ucits_gold_count: int,
+    ignored_gold_equity_proxy_count: int,
+) -> GoldPolicySummary:
+    note = "Strict UCITS-only gold policy active."
+    if eligible_ucits_gold_count > 0:
+        note = (
+            f"{note} Found {eligible_ucits_gold_count} eligible UCITS gold commodity "
+            "instrument(s) in the selected universe."
+        )
+    else:
+        note = f"{note} No eligible UCITS gold commodity instrument was found in the selected universe."
+        details: list[str] = []
+        if excluded_non_ucits_gold_count > 0:
+            details.append(
+                f"{excluded_non_ucits_gold_count} non-UCITS physical gold instrument(s) were excluded"
+            )
+        if ignored_gold_equity_proxy_count > 0:
+            details.append(
+                f"{ignored_gold_equity_proxy_count} gold miner/producer equity proxy instrument(s) were ignored"
+            )
+        if details:
+            note = f"{note} {'; '.join(details)}."
+    return GoldPolicySummary(
+        policy_name=GOLD_BUCKET_POLICY,
+        eligible_ucits_gold_count=eligible_ucits_gold_count,
+        excluded_non_ucits_gold_count=excluded_non_ucits_gold_count,
+        ignored_gold_equity_proxy_count=ignored_gold_equity_proxy_count,
+        note=note,
+    )
+
+
+def load_non_mvp_gold_like_rows(conn: sqlite3.Connection, venues: list[str]) -> list[dict[str, object]]:
+    placeholders = ",".join("?" for _ in venues)
+    rows = conn.execute(
+        f"""
+        SELECT
+            i.isin,
+            i.instrument_name,
+            i.instrument_type,
+            l.venue_mic AS primary_venue
+        FROM instrument i
+        JOIN listing l
+          ON l.instrument_id = i.instrument_id
+         AND COALESCE(l.primary_flag, 0) = 1
+        WHERE COALESCE(i.universe_mvp_flag, 0) = 0
+          AND COALESCE(l.status, 'active') = 'active'
+          AND l.venue_mic IN ({placeholders})
+          AND (
+              UPPER(i.instrument_name) LIKE '%GOLD%'
+              OR UPPER(i.instrument_name) LIKE '%BULLION%'
+          )
+        ORDER BY i.isin
+        """,
+        tuple(venues),
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def inspect_gold_policy(
+    conn: sqlite3.Connection,
+    *,
+    base_rows: list[dict[str, object]],
+    selected_venues: list[str],
+) -> GoldPolicySummary:
+    scoped_rows = filter_rows_by_venues(base_rows, selected_venues)
+    eligible_ucits_gold_count = sum(1 for row in scoped_rows if match_bucket("gold", row)[0])
+    ignored_gold_equity_proxy_count = sum(
+        1
+        for row in scoped_rows
+        if str(row.get("asset_class") or "").lower() == "equity"
+        and has_gold_like_name(str(row.get("instrument_name") or ""))
+        and has_gold_equity_proxy_name(str(row.get("instrument_name") or ""))
+    )
+
+    excluded_non_ucits_gold_count = 0
+    for row in load_non_mvp_gold_like_rows(conn, selected_venues):
+        result = classify_instrument(
+            isin=str(row.get("isin") or ""),
+            instrument_name=str(row.get("instrument_name") or ""),
+            instrument_type=str(row.get("instrument_type") or ""),
+            distribution_policy=None,
+        )
+        if result.asset_class == "commodity" and result.commodity_type == "gold":
+            excluded_non_ucits_gold_count += 1
+
+    return summarize_gold_policy(
+        eligible_ucits_gold_count=eligible_ucits_gold_count,
+        excluded_non_ucits_gold_count=excluded_non_ucits_gold_count,
+        ignored_gold_equity_proxy_count=ignored_gold_equity_proxy_count,
+    )
 
 
 def run_bucket_attempt(
@@ -706,6 +817,7 @@ def build_strategy_rows(
     currency_order: list[str],
     allow_missing_fees: bool,
     allow_missing_currency: bool,
+    gold_policy: GoldPolicySummary | None = None,
 ) -> tuple[list[dict[str, object]], dict[str, int], dict[str, dict[str, object]]]:
     out: list[dict[str, object]] = []
     emitted: dict[str, int] = {}
@@ -724,6 +836,15 @@ def build_strategy_rows(
         )
         out.extend(selected)
         emitted[bucket_name] = len(selected)
+        if bucket_name == "gold" and gold_policy is not None:
+            diag = {
+                **diag,
+                "policy_name": gold_policy.policy_name,
+                "policy_note": gold_policy.note,
+                "eligible_ucits_gold_count": gold_policy.eligible_ucits_gold_count,
+                "excluded_non_ucits_gold_count": gold_policy.excluded_non_ucits_gold_count,
+                "ignored_gold_equity_proxy_count": gold_policy.ignored_gold_equity_proxy_count,
+            }
         diagnostics[bucket_name] = diag
     return out, emitted, diagnostics
 
@@ -794,6 +915,12 @@ def print_bucket_summary(
             print(f"      final_ranking_count={attempt['final_selected']}")
         print(f"    final_step={diag['final_step']}")
         print(f"    final_candidates_emitted={emitted[bucket_name]}")
+        if bucket_name == "gold" and "policy_name" in diag:
+            print(f"    policy={diag['policy_name']}")
+            print(f"    eligible_ucits_gold={diag['eligible_ucits_gold_count']}")
+            print(f"    excluded_non_ucits_gold={diag['excluded_non_ucits_gold_count']}")
+            print(f"    ignored_gold_equity_proxies={diag['ignored_gold_equity_proxy_count']}")
+            print(f"    policy_note={diag['policy_note']}")
         if int(diag["final_selected"]) < min(top_n, 5):
             print("    debug_top20_pre_ranking:")
             for item in diag["pre_rank_top20"]:
@@ -889,6 +1016,7 @@ def run_recommendations(
         conn.execute("BEGIN")
         classified = ensure_recommendation_inputs(conn)
         base_rows = load_base_candidates(conn)
+        gold_policy = inspect_gold_policy(conn, base_rows=base_rows, selected_venues=venues)
         conn.commit()
     except Exception:
         conn.rollback()
@@ -912,6 +1040,8 @@ def run_recommendations(
     print(f"kept after hard filters (strict fees): {len(strict_candidates)}")
     print(f"excluded_missing_fees={strict_excluded_counts['missing_fees']}")
     print(f"excluded_missing_currency={strict_excluded_counts['missing_currency']}")
+    print(f"gold_policy={gold_policy.policy_name}")
+    print(f"gold_policy_note={gold_policy.note}")
 
     artifacts_root = Path(artifacts_dir)
     outputs: list[tuple[str, Path, dict[str, int], dict[str, dict[str, object]]]] = []
@@ -924,6 +1054,7 @@ def run_recommendations(
             currency_order=currency_order,
             allow_missing_fees=allow_missing_fees,
             allow_missing_currency=allow_missing_currency,
+            gold_policy=gold_policy,
         )
         output_path = artifacts_root / strategy["filename"]
         export_strategy_csv(output_path, rows)
