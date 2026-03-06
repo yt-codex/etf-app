@@ -12,9 +12,11 @@ import re
 import sqlite3
 import sys
 import time
+import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
+from urllib.parse import urljoin
 
 import requests
 from pypdf import PdfReader
@@ -24,11 +26,23 @@ try:
 except Exception:
     fitz = None
 
-PARSER_VERSION = "stage2_5_amundi_enrich_v1"
+PARSER_VERSION = "stage2_5_amundi_enrich_v2"
 AMUNDI_SOURCE = "amundi_monthly_factsheet"
+AMUNDI_BASE_URL = "https://www.amundietf.com"
 FACTSHEET_TEMPLATE = (
     "https://www.amundietf.ch/pdfDocuments/monthly-factsheet/{ISIN_UPPER}/ENG/CHE/INSTITUTIONNEL/ETF"
 )
+DOCUMENT_API_URL = f"{AMUNDI_BASE_URL}/mapi/DocumentAPI/document/getByProductIdsAndContext"
+DOCUMENT_API_CONTEXTS = (
+    {"countryCode": "SGP", "languageCode": "en", "userProfileName": "RETAIL"},
+    {"countryCode": "GBR", "languageCode": "en", "userProfileName": "RETAIL"},
+    {"countryCode": "LUX", "languageCode": "en", "userProfileName": "RETAIL"},
+    {"countryCode": "FRA", "languageCode": "en", "userProfileName": "RETAIL"},
+    {"countryCode": "CHE", "languageCode": "en", "userProfileName": "INSTIT"},
+    {"countryCode": "CHE", "languageCode": "en", "userProfileName": "RETAIL"},
+    {"countryCode": "LUX", "languageCode": "en", "userProfileName": "INSTIT"},
+)
+DISCOVERY_BATCH_SIZE = 100
 SELF_TEST_ISIN = "LU1407890547"
 
 
@@ -53,6 +67,23 @@ class DownloadResult:
     cache_path: Optional[Path]
     http_status: Optional[int]
     content_type: Optional[str]
+
+
+@dataclass
+class DiscoveredFactsheet:
+    url: str
+    context_country: str
+    user_profile: str
+    language: Optional[str]
+    record_date: Optional[int]
+    document_name: Optional[str]
+    applied_alias: Optional[str]
+
+
+@dataclass
+class FactsheetCandidate:
+    url: str
+    source: str
 
 
 def log(message: str) -> None:
@@ -157,6 +188,38 @@ class HttpClient:
                 raise
         raise RuntimeError("HEAD request failed unexpectedly")
 
+    def post_json(
+        self,
+        url: str,
+        payload: dict[str, object],
+        *,
+        timeout: Optional[int] = None,
+    ) -> requests.Response:
+        attempt = 0
+        request_timeout = timeout or self.timeout
+        while attempt <= self.max_retries:
+            attempt += 1
+            try:
+                self._throttle()
+                resp = self.session.post(
+                    url,
+                    json=payload,
+                    headers={"Accept": "application/json", "Content-Type": "application/json"},
+                    timeout=request_timeout,
+                    allow_redirects=True,
+                )
+                self.last_request_at = time.monotonic()
+                if resp.status_code in {429, 500, 502, 503, 504} and attempt <= self.max_retries:
+                    time.sleep(min(2**attempt, 8))
+                    continue
+                return resp
+            except requests.RequestException:
+                if attempt <= self.max_retries:
+                    time.sleep(min(2**attempt, 8))
+                    continue
+                raise
+        raise RuntimeError("POST request failed unexpectedly")
+
 
 def now_utc_iso() -> str:
     return dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -172,6 +235,139 @@ def venue_scope(arg: str) -> list[str]:
 
 def build_factsheet_url(isin: str) -> str:
     return FACTSHEET_TEMPLATE.format(ISIN_UPPER=isin.upper())
+
+
+def build_absolute_amundi_url(url: Optional[str]) -> Optional[str]:
+    if not url:
+        return None
+    if re.match(r"^https?://", url, flags=re.IGNORECASE):
+        return url
+    return urljoin(f"{AMUNDI_BASE_URL}/", url.lstrip("/"))
+
+
+def chunked(items: list[str], size: int) -> list[list[str]]:
+    return [items[idx : idx + size] for idx in range(0, len(items), size)]
+
+
+def extract_numeric_token(value: object) -> Optional[int]:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def select_monthly_factsheet_document(docs: list[dict[str, object]]) -> Optional[dict[str, object]]:
+    candidates: list[dict[str, object]] = []
+    for doc in docs:
+        document_type = doc.get("documentType") or {}
+        if not isinstance(document_type, dict):
+            continue
+        if str(document_type.get("name") or "").lower() != "monthlyfactsheet":
+            continue
+        url = build_absolute_amundi_url(str(doc.get("url") or doc.get("appliedAlias") or "") or None)
+        if not url:
+            continue
+        candidates.append(doc)
+
+    if not candidates:
+        return None
+
+    def sort_key(doc: dict[str, object]) -> tuple[int, int, int, str]:
+        language = str(doc.get("language") or "").strip().lower()
+        alias = str(doc.get("appliedAlias") or "")
+        record_date = extract_numeric_token(doc.get("recordDate")) or 0
+        return (
+            0 if language == "english" else 1,
+            -record_date,
+            0 if "/ETF/" in alias else 1,
+            str(doc.get("name") or ""),
+        )
+
+    return sorted(candidates, key=sort_key)[0]
+
+
+def discover_monthly_factsheet_urls(client: HttpClient, isins: list[str]) -> dict[str, DiscoveredFactsheet]:
+    discovered: dict[str, DiscoveredFactsheet] = {}
+    unresolved = [isin.upper() for isin in isins if isin]
+    if not unresolved:
+        return discovered
+
+    for context in DOCUMENT_API_CONTEXTS:
+        pending = [isin for isin in unresolved if isin not in discovered]
+        if not pending:
+            break
+        for batch in chunked(pending, DISCOVERY_BATCH_SIZE):
+            try:
+                response = client.post_json(
+                    DOCUMENT_API_URL,
+                    {"productIds": batch, "context": context},
+                    timeout=25,
+                )
+            except requests.RequestException:
+                continue
+            if int(response.status_code) != 200:
+                continue
+            try:
+                payload = response.json()
+            except ValueError:
+                continue
+            if not isinstance(payload, dict):
+                continue
+
+            for isin, docs in payload.items():
+                if not isinstance(isin, str) or not isinstance(docs, list):
+                    continue
+                if isin in discovered:
+                    continue
+                selected = select_monthly_factsheet_document(docs)
+                if not selected:
+                    continue
+                absolute_url = build_absolute_amundi_url(
+                    str(selected.get("url") or selected.get("appliedAlias") or "") or None
+                )
+                if not absolute_url:
+                    continue
+                discovered[isin] = DiscoveredFactsheet(
+                    url=absolute_url,
+                    context_country=str(context["countryCode"]),
+                    user_profile=str(context["userProfileName"]),
+                    language=str(selected.get("language") or "") or None,
+                    record_date=extract_numeric_token(selected.get("recordDate")),
+                    document_name=str(selected.get("name") or "") or None,
+                    applied_alias=str(selected.get("appliedAlias") or "") or None,
+                )
+    return discovered
+
+
+def build_factsheet_candidates(
+    isin: str,
+    *,
+    discovered: Optional[DiscoveredFactsheet],
+    known_url: Optional[str],
+) -> list[FactsheetCandidate]:
+    candidates: list[FactsheetCandidate] = []
+    seen: set[str] = set()
+
+    def add(url: Optional[str], source: str) -> None:
+        absolute_url = build_absolute_amundi_url(url)
+        if not absolute_url:
+            return
+        key = absolute_url.strip()
+        if not key or key in seen:
+            return
+        seen.add(key)
+        candidates.append(FactsheetCandidate(url=absolute_url, source=source))
+
+    if discovered is not None:
+        add(
+            discovered.url,
+            f"document_api:{discovered.context_country}:{discovered.user_profile}:{discovered.language or 'unknown'}",
+        )
+    add(known_url, "instrument_url_map")
+    add(build_factsheet_url(isin), "legacy_template")
+    return candidates
 
 
 def is_pdf_probe_success(content_type: Optional[str], final_url: Optional[str], first_bytes: bytes) -> bool:
@@ -416,6 +612,15 @@ def extract_fee(text: str, lines: list[str]) -> tuple[Optional[float], Optional[
                 parsed = parse_percent_token(match.group(1))
                 if parsed is not None:
                     return parsed, line
+        ter_match = re.search(
+            r"TOTAL\s+EXPENSE\s+RATIO(?:\s*\(TER\))?\s*(?:P\.?\s*A\.?)?\s*([0-9]+(?:[.,][0-9]+)?)\s*%?",
+            line,
+            flags=re.IGNORECASE,
+        )
+        if ter_match:
+            parsed = parse_percent_token(ter_match.group(1))
+            if parsed is not None:
+                return parsed, line
 
     normalized = normalize_space(text)
     m = re.search(
@@ -427,12 +632,22 @@ def extract_fee(text: str, lines: list[str]) -> tuple[Optional[float], Optional[
         parsed = parse_percent_token(m.group(1))
         if parsed is not None:
             return parsed, m.group(0)
+    ter_match = re.search(
+        r"Total Expense Ratio(?:\s*\(TER\))?\s*(?:p\.?\s*a\.?)?\s*([0-9]+(?:[.,][0-9]+)?)\s*%?",
+        normalized,
+        flags=re.IGNORECASE,
+    )
+    if ter_match:
+        parsed = parse_percent_token(ter_match.group(1))
+        if parsed is not None:
+            return parsed, ter_match.group(0)
     return None, None
 
 
 def map_distribution(token: str) -> Optional[str]:
-    t = token.strip().lower()
-    if t.startswith("accumulat"):
+    folded = unicodedata.normalize("NFKD", token.strip()).encode("ascii", errors="ignore").decode("ascii")
+    t = folded.lower()
+    if t.startswith("accumulat") or t.startswith("capitalis") or t.startswith("capitaliz"):
         return "Accumulating"
     if t.startswith("distribut"):
         return "Distributing"
@@ -441,7 +656,10 @@ def map_distribution(token: str) -> Optional[str]:
 
 def extract_distribution(text: str, lines: list[str]) -> tuple[Optional[str], Optional[str]]:
     pattern = re.compile(
-        r"Type of shares.{0,100}?(Accumulation|Distribution|Accumulating|Distributing)",
+        (
+            r"(?:Type of shares|Income treatment).{0,100}?"
+            r"(Accumulation|Distribution|Accumulating|Distributing|Capitalisation|Capitalization)"
+        ),
         flags=re.IGNORECASE,
     )
     for line in lines:
@@ -498,10 +716,11 @@ def normalize_replication_method(value: Optional[str]) -> Optional[str]:
     text = normalize_space(value)
     if not text:
         return None
-    upper = text.upper()
-    if "PHYSICAL" in upper:
+    folded = unicodedata.normalize("NFKD", text).encode("ascii", errors="ignore").decode("ascii")
+    upper = folded.upper()
+    if "PHYS" in upper:
         return "physical"
-    if "SYNTHETIC" in upper or "SWAP" in upper:
+    if "SYNTH" in upper or "SWAP" in upper:
         return "synthetic"
     return text
 
@@ -709,6 +928,24 @@ def upsert_instrument_url_map(conn: sqlite3.Connection, instrument_id: int, url:
     )
 
 
+def load_existing_factsheet_urls(conn: sqlite3.Connection, instrument_ids: list[int]) -> dict[int, str]:
+    if not instrument_ids:
+        return {}
+    placeholders = ",".join("?" for _ in instrument_ids)
+    rows = conn.execute(
+        f"""
+        SELECT instrument_id, url
+        FROM instrument_url_map
+        WHERE url_type = 'amundi_monthly_factsheet'
+          AND instrument_id IN ({placeholders})
+          AND url IS NOT NULL
+          AND TRIM(url) <> ''
+        """,
+        instrument_ids,
+    ).fetchall()
+    return {int(row["instrument_id"]): str(row["url"]) for row in rows}
+
+
 def table_has_column(conn: sqlite3.Connection, table: str, column: str) -> bool:
     rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
     return any(row["name"] == column for row in rows)
@@ -855,11 +1092,19 @@ def safe_print(value: Optional[str]) -> str:
 
 
 def run_self_test(client: HttpClient, cache_dir: Path) -> bool:
-    url = build_factsheet_url(SELF_TEST_ISIN)
+    discovered = discover_monthly_factsheet_urls(client, [SELF_TEST_ISIN]).get(SELF_TEST_ISIN)
+    candidates = build_factsheet_candidates(SELF_TEST_ISIN, discovered=discovered, known_url=None)
+    url = candidates[0].url if candidates else build_factsheet_url(SELF_TEST_ISIN)
     probe = probe_pdf_url(client, url)
     print("=== Stage 2.5 Self-test ===")
     print(f"isin: {SELF_TEST_ISIN}")
     print(f"url: {url}")
+    if discovered:
+        print(
+            "discovery: "
+            f"context={discovered.context_country}/{discovered.user_profile} "
+            f"language={discovered.language} record_date={discovered.record_date}"
+        )
     print(
         f"probe: accepted={probe.accepted} method={probe.method} status={probe.status_code} "
         f"ctype={probe.content_type} reason={probe.reason}"
@@ -915,7 +1160,13 @@ def main(argv: list[str]) -> int:
         ensure_tables_and_view(conn)
         targets = load_targets(conn, args.limit, args.venue)
         attempted = len(targets)
+        existing_urls = load_existing_factsheet_urls(
+            conn,
+            [int(row["instrument_id"]) for row in targets],
+        )
+        discovered_urls = discover_monthly_factsheet_urls(client, [str(row["isin"]) for row in targets])
         log(f"Target Amundi subset loaded: {attempted} rows (venue={args.venue}, limit={args.limit})")
+        log(f"Document API resolved factsheet URLs for {len(discovered_urls)}/{attempted} target instruments")
         if attempted == 0:
             conn.commit()
             print_kpis(0, 0, 0, 0, 0, 0)
@@ -926,31 +1177,62 @@ def main(argv: list[str]) -> int:
             instrument_id = int(row["instrument_id"])
             isin = str(row["isin"])
             ticker = str(row["ticker"] or "")
-            factsheet_url = build_factsheet_url(isin)
+            discovered = discovered_urls.get(isin)
+            factsheet_candidates = build_factsheet_candidates(
+                isin,
+                discovered=discovered,
+                known_url=existing_urls.get(instrument_id),
+            )
             debug: dict[str, object] = {
                 "parser_version": PARSER_VERSION,
                 "instrument_id": instrument_id,
                 "isin": isin,
-                "factsheet_url": factsheet_url,
+                "factsheet_candidates": [
+                    {"url": candidate.url, "source": candidate.source}
+                    for candidate in factsheet_candidates
+                ],
                 "attempted_at": now_utc_iso(),
             }
+            if discovered is not None:
+                debug["discovery"] = {
+                    "url": discovered.url,
+                    "context_country": discovered.context_country,
+                    "user_profile": discovered.user_profile,
+                    "language": discovered.language,
+                    "record_date": discovered.record_date,
+                    "document_name": discovered.document_name,
+                    "applied_alias": discovered.applied_alias,
+                }
 
-            probe = probe_pdf_url(client, factsheet_url)
-            debug["probe"] = {
-                "accepted": probe.accepted,
-                "reason": probe.reason,
-                "status_code": probe.status_code,
-                "content_type": probe.content_type,
-                "final_url": probe.final_url,
-                "method": probe.method,
-                "first_bytes_hex": probe.first_bytes_hex,
-            }
-            if not probe.accepted:
+            probe: Optional[ProbeResult] = None
+            selected_candidate: Optional[FactsheetCandidate] = None
+            probe_attempts: list[dict[str, object]] = []
+            for candidate in factsheet_candidates:
+                candidate_probe = probe_pdf_url(client, candidate.url)
+                probe_attempts.append(
+                    {
+                        "candidate_url": candidate.url,
+                        "candidate_source": candidate.source,
+                        "accepted": candidate_probe.accepted,
+                        "reason": candidate_probe.reason,
+                        "status_code": candidate_probe.status_code,
+                        "content_type": candidate_probe.content_type,
+                        "final_url": candidate_probe.final_url,
+                        "method": candidate_probe.method,
+                        "first_bytes_hex": candidate_probe.first_bytes_hex,
+                    }
+                )
+                if candidate_probe.accepted:
+                    probe = candidate_probe
+                    selected_candidate = candidate
+                    break
+            debug["probe_attempts"] = probe_attempts
+            if probe is None or selected_candidate is None:
                 insert_issuer_metadata_snapshot(
                     conn,
                     instrument_id=instrument_id,
                     asof_date=asof_date,
-                    source_url=factsheet_url,
+                    source_url=factsheet_candidates[0].url if factsheet_candidates else build_factsheet_url(isin),
                     ter=None,
                     use_of_income=None,
                     ucits_compliant=None,
@@ -962,7 +1244,11 @@ def main(argv: list[str]) -> int:
                 continue
 
             url_ok += 1
-            final_url = probe.final_url or factsheet_url
+            debug["selected_candidate"] = {
+                "url": selected_candidate.url,
+                "source": selected_candidate.source,
+            }
+            final_url = probe.final_url or selected_candidate.url
             upsert_instrument_url_map(conn, instrument_id, final_url)
 
             dl = download_pdf(client, final_url, cache_dir)
