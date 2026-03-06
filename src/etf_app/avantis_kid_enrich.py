@@ -28,6 +28,7 @@ from etf_app.kid_ingest import parse_ongoing_charges
 
 PARSER_VERSION = "stage2_7_avantis_kid_enrich_v1"
 DOC_TYPE = "PRIIPS_KID"
+SOURCE_NAME = "avantis_kid"
 AVANTIS_LANDING_URL = "https://www.avantisinvestors.com/ucitsetf/"
 AVANTIS_ISSUER_NORMALIZED = "Avantis / American Century ICAV"
 AVANTIS_ISSUER_DOMAIN = "avantisinvestors.com"
@@ -168,6 +169,22 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
     ensure_column(conn, "issuer", "domain", "TEXT")
     ensure_column(conn, "instrument", "issuer_source", "TEXT")
 
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS issuer_metadata_snapshot(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            instrument_id INTEGER,
+            asof_date TEXT,
+            source TEXT,
+            source_url TEXT,
+            ter REAL NULL,
+            use_of_income TEXT NULL,
+            ucits_compliant INTEGER NULL,
+            quality_flag TEXT,
+            raw_json TEXT
+        )
+        """
+    )
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS instrument_url_map(
@@ -738,6 +755,46 @@ def insert_cost_snapshot(
     )
 
 
+def insert_issuer_metadata_snapshot(
+    conn: sqlite3.Connection,
+    *,
+    instrument_id: int,
+    asof_date: str,
+    source_url: str,
+    ter: Optional[float],
+    use_of_income: Optional[str],
+    ucits_compliant: Optional[int],
+    quality_flag: str,
+    raw_json: dict[str, object],
+) -> None:
+    conn.execute(
+        """
+        INSERT INTO issuer_metadata_snapshot(
+            instrument_id,
+            asof_date,
+            source,
+            source_url,
+            ter,
+            use_of_income,
+            ucits_compliant,
+            quality_flag,
+            raw_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            instrument_id,
+            asof_date,
+            SOURCE_NAME,
+            source_url,
+            ter,
+            use_of_income,
+            ucits_compliant,
+            quality_flag,
+            json.dumps(raw_json, ensure_ascii=True),
+        ),
+    )
+
+
 def print_kpis(
     *,
     funds_discovered: int,
@@ -866,7 +923,7 @@ def main(argv: list[str]) -> int:
 
             if fee is not None:
                 raw_json = {
-                    "source": "avantis_kid",
+                    "source": SOURCE_NAME,
                     "parser_version": PARSER_VERSION,
                     "fund_url": fund_url,
                     "kid_url": kid_url,
@@ -905,6 +962,26 @@ def main(argv: list[str]) -> int:
                 costs_written += 1
                 if len(samples) < 10:
                     samples.append((chosen_isin, ticker, kid_url, fee))
+
+            metadata_json = {
+                "source": SOURCE_NAME,
+                "parser_version": PARSER_VERSION,
+                "fund_url": fund_url,
+                "kid_url": kid_url,
+                "distribution_policy": distribution,
+                "ucits_compliant": 1,
+            }
+            insert_issuer_metadata_snapshot(
+                conn,
+                instrument_id=instrument_id,
+                asof_date=asof_date,
+                source_url=kid_url,
+                ter=fee,
+                use_of_income=distribution,
+                ucits_compliant=1,
+                quality_flag="ok" if fee is not None else "partial",
+                raw_json=metadata_json,
+            )
 
             issuer_backfilled += backfill_instrument_issuer(conn, instrument_id, avantis_issuer_id)
 

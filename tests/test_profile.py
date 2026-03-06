@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 
 from etf_app.profile import detect_ucits_flag, ensure_instrument_cost_current_view, refresh_product_profile
@@ -66,6 +67,28 @@ def test_refresh_product_profile_backfills_current_fields() -> None:
     conn.execute(
         """
         INSERT INTO issuer_metadata_snapshot(instrument_id, asof_date, source, source_url, ter, use_of_income, ucits_compliant, quality_flag, raw_json)
+        VALUES (?, '2026-02-15', 'ishares_product_page', 'https://example.com/old', 0.12, NULL, NULL, 'ok', ?)
+        """,
+        (
+            1,
+            json.dumps(
+                {
+                    "parsed": {
+                        "benchmark_name": "MSCI World Index",
+                        "asset_class_hint": "Equity",
+                        "domicile_country": "Ireland",
+                        "replication_method": "physical",
+                        "hedged_flag": 1,
+                        "hedged_target": "GBP",
+                    }
+                },
+                ensure_ascii=True,
+            ),
+        ),
+    )
+    conn.execute(
+        """
+        INSERT INTO issuer_metadata_snapshot(instrument_id, asof_date, source, source_url, ter, use_of_income, ucits_compliant, quality_flag, raw_json)
         VALUES (1, '2026-03-01', 'issuer', 'https://example.com', 0.12, 'Accumulating', 1, 'ok', '{}')
         """
     )
@@ -84,7 +107,18 @@ def test_refresh_product_profile_backfills_current_fields() -> None:
     ).fetchone()
     profile = conn.execute(
         """
-        SELECT distribution_policy, ucits_flag, ucits_source, ongoing_charges, ongoing_charges_asof
+        SELECT
+            distribution_policy,
+            ucits_flag,
+            ucits_source,
+            ongoing_charges,
+            ongoing_charges_asof,
+            benchmark_name,
+            asset_class_hint,
+            domicile_country,
+            replication_method,
+            hedged_flag,
+            hedged_target
         FROM product_profile
         WHERE instrument_id = 1
         """
@@ -97,3 +131,9 @@ def test_refresh_product_profile_backfills_current_fields() -> None:
     assert profile["ucits_flag"] == 1
     assert profile["ongoing_charges"] == 0.12
     assert profile["ongoing_charges_asof"] == "2026-03-02"
+    assert profile["benchmark_name"] == "MSCI World Index"
+    assert profile["asset_class_hint"] == "Equity"
+    assert profile["domicile_country"] == "Ireland"
+    assert profile["replication_method"] == "physical"
+    assert profile["hedged_flag"] == 1
+    assert profile["hedged_target"] == "GBP"

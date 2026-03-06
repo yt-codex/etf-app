@@ -419,6 +419,54 @@ def parse_percent(value: str) -> Optional[float]:
     return None
 
 
+def _lookup_fact_value(
+    facts: dict[str, str],
+    *,
+    exact_keys: tuple[str, ...] = (),
+    contains_keys: tuple[str, ...] = (),
+) -> Optional[str]:
+    exact_upper = {key.upper() for key in exact_keys}
+    for key, value in facts.items():
+        key_upper = normalize_space(key).upper()
+        if key_upper in exact_upper:
+            cleaned = normalize_space(value)
+            if cleaned:
+                return cleaned
+    for key, value in facts.items():
+        key_upper = normalize_space(key).upper()
+        if any(token in key_upper for token in contains_keys):
+            cleaned = normalize_space(value)
+            if cleaned:
+                return cleaned
+    return None
+
+
+def _normalize_replication_method(value: Optional[str]) -> Optional[str]:
+    text = normalize_space(value)
+    if not text:
+        return None
+    upper = text.upper()
+    if "PHYSICAL" in upper:
+        return "physical"
+    if "SYNTHETIC" in upper or "SWAP" in upper:
+        return "synthetic"
+    return text
+
+
+def _parse_hedged_metadata(value: Optional[str]) -> tuple[Optional[int], Optional[str]]:
+    text = normalize_space(value)
+    if not text:
+        return None, None
+    upper = text.upper()
+    if upper in {"NO", "FALSE", "UNHEDGED"} or "UNHEDGED" in upper:
+        return 0, None
+    target_match = re.search(r"\b(USD|EUR|GBP|JPY|CHF)\b", upper)
+    target = target_match.group(1) if target_match else None
+    if upper in {"YES", "TRUE"} or "HEDG" in upper or target is not None:
+        return 1, target
+    return None, None
+
+
 def _clean_caption_text(caption_node: BeautifulSoup) -> str:
     node = caption_node
     for child in node.find_all(["button", "div"]):
@@ -474,10 +522,45 @@ def parse_ishares_product_page(html: str) -> dict[str, object]:
         if m:
             ter = parse_percent(m.group(1) + "%")
 
+    benchmark_name = _lookup_fact_value(
+        facts,
+        exact_keys=("Benchmark Index", "Index", "Reference Index", "Underlying Index"),
+    )
+    asset_class_hint = _lookup_fact_value(
+        facts,
+        exact_keys=("Asset Class",),
+        contains_keys=("ASSET CLASS",),
+    )
+    domicile_country = _lookup_fact_value(
+        facts,
+        exact_keys=("Fund Domicile", "Domicile"),
+        contains_keys=("DOMICILE",),
+    )
+    replication_method = _normalize_replication_method(
+        _lookup_fact_value(
+            facts,
+            exact_keys=("Replication Method",),
+            contains_keys=("REPLICATION",),
+        )
+    )
+    hedged_flag, hedged_target = _parse_hedged_metadata(
+        _lookup_fact_value(
+            facts,
+            exact_keys=("Currency Hedged", "Hedged"),
+            contains_keys=("HEDGED",),
+        )
+    )
+
     return {
         "ter": ter,
         "use_of_income": use_of_income,
         "ucits_compliant": ucits_compliant,
+        "benchmark_name": benchmark_name,
+        "asset_class_hint": asset_class_hint,
+        "domicile_country": domicile_country,
+        "replication_method": replication_method,
+        "hedged_flag": hedged_flag,
+        "hedged_target": hedged_target,
         "facts": facts,
     }
 
@@ -730,6 +813,12 @@ def main(argv: list[str]) -> int:
                 "ter": ter,
                 "use_of_income": use_of_income,
                 "ucits_compliant": ucits_compliant,
+                "benchmark_name": parsed_payload.get("benchmark_name"),
+                "asset_class_hint": parsed_payload.get("asset_class_hint"),
+                "domicile_country": parsed_payload.get("domicile_country"),
+                "replication_method": parsed_payload.get("replication_method"),
+                "hedged_flag": parsed_payload.get("hedged_flag"),
+                "hedged_target": parsed_payload.get("hedged_target"),
                 "facts_keys": sorted(list((parsed_payload.get("facts") or {}).keys()))[:30],
             }
 

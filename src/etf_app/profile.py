@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import json
 import re
 import sqlite3
 from dataclasses import dataclass
@@ -39,6 +40,7 @@ class ProfileSyncStats:
     instruments_ucits_updated: int = 0
     distributions_synced: int = 0
     costs_synced: int = 0
+    metadata_synced: int = 0
 
 
 def now_utc_iso() -> str:
@@ -78,6 +80,12 @@ def ensure_product_profile_schema(conn: sqlite3.Connection) -> None:
             ucits_updated_at TEXT NULL,
             ongoing_charges REAL NULL,
             ongoing_charges_asof TEXT NULL,
+            benchmark_name TEXT NULL,
+            asset_class_hint TEXT NULL,
+            domicile_country TEXT NULL,
+            replication_method TEXT NULL,
+            hedged_flag INTEGER NULL CHECK (hedged_flag IN (0, 1)),
+            hedged_target TEXT NULL,
             updated_at TEXT NOT NULL,
             FOREIGN KEY (instrument_id) REFERENCES instrument(instrument_id)
         )
@@ -89,6 +97,12 @@ def ensure_product_profile_schema(conn: sqlite3.Connection) -> None:
     ensure_column(conn, "product_profile", "ucits_updated_at", "TEXT")
     ensure_column(conn, "product_profile", "ongoing_charges", "REAL")
     ensure_column(conn, "product_profile", "ongoing_charges_asof", "TEXT")
+    ensure_column(conn, "product_profile", "benchmark_name", "TEXT")
+    ensure_column(conn, "product_profile", "asset_class_hint", "TEXT")
+    ensure_column(conn, "product_profile", "domicile_country", "TEXT")
+    ensure_column(conn, "product_profile", "replication_method", "TEXT")
+    ensure_column(conn, "product_profile", "hedged_flag", "INTEGER")
+    ensure_column(conn, "product_profile", "hedged_target", "TEXT")
     ensure_column(conn, "product_profile", "updated_at", "TEXT", f"'{now_utc_iso()}'")
 
 
@@ -241,6 +255,99 @@ def _load_current_costs(conn: sqlite3.Connection) -> dict[int, tuple[float, str]
     }
 
 
+def _normalize_text_value(value: object) -> Optional[str]:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _coerce_optional_flag(value: object) -> Optional[int]:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return 1 if value else 0
+    if isinstance(value, (int, float)):
+        if value in {0, 1}:
+            return int(value)
+        return None
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "y"}:
+        return 1
+    if text in {"0", "false", "no", "n"}:
+        return 0
+    return None
+
+
+def _extract_profile_metadata_from_payload(payload: dict[str, object]) -> dict[str, object]:
+    extracted: dict[str, object] = {}
+    for container_key in ("parsed", "parse"):
+        nested = payload.get(container_key)
+        if isinstance(nested, dict):
+            payload = {**payload, **nested}
+
+    benchmark_name = _normalize_text_value(payload.get("benchmark_name"))
+    asset_class_hint = _normalize_text_value(payload.get("asset_class_hint"))
+    domicile_country = _normalize_text_value(payload.get("domicile_country"))
+    replication_method = _normalize_text_value(payload.get("replication_method"))
+    hedged_flag = _coerce_optional_flag(payload.get("hedged_flag"))
+    hedged_target = _normalize_text_value(payload.get("hedged_target"))
+    if hedged_flag is None and hedged_target is not None:
+        hedged_flag = 1
+
+    extracted["benchmark_name"] = benchmark_name
+    extracted["asset_class_hint"] = asset_class_hint
+    extracted["domicile_country"] = domicile_country
+    extracted["replication_method"] = replication_method
+    extracted["hedged_flag"] = hedged_flag
+    extracted["hedged_target"] = hedged_target
+    return extracted
+
+
+def _load_latest_profile_metadata(conn: sqlite3.Connection) -> dict[int, dict[str, object]]:
+    try:
+        rows = conn.execute(
+            """
+            SELECT instrument_id, raw_json
+            FROM issuer_metadata_snapshot
+            WHERE raw_json IS NOT NULL
+              AND TRIM(raw_json) <> ''
+            ORDER BY asof_date DESC, id DESC
+            """
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return {}
+
+    per_instrument: dict[int, dict[str, object]] = {}
+    for row in rows:
+        instrument_id = int(row["instrument_id"])
+        try:
+            payload = json.loads(str(row["raw_json"]))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            continue
+        if not isinstance(payload, dict):
+            continue
+
+        extracted = _extract_profile_metadata_from_payload(payload)
+        current = per_instrument.setdefault(
+            instrument_id,
+            {
+                "benchmark_name": None,
+                "asset_class_hint": None,
+                "domicile_country": None,
+                "replication_method": None,
+                "hedged_flag": None,
+                "hedged_target": None,
+            },
+        )
+        for key, value in extracted.items():
+            if value is None:
+                continue
+            if current.get(key) is None:
+                current[key] = value
+    return per_instrument
+
+
 def refresh_product_profile(conn: sqlite3.Connection) -> ProfileSyncStats:
     ensure_product_profile_schema(conn)
     ensure_instrument_cost_current_view(conn)
@@ -250,6 +357,7 @@ def refresh_product_profile(conn: sqlite3.Connection) -> ProfileSyncStats:
     latest_distribution = _load_latest_distribution(conn)
     latest_ucits = _load_latest_ucits_snapshot(conn)
     current_costs = _load_current_costs(conn)
+    latest_metadata = _load_latest_profile_metadata(conn)
 
     instruments = conn.execute(
         """
@@ -260,7 +368,24 @@ def refresh_product_profile(conn: sqlite3.Connection) -> ProfileSyncStats:
     ).fetchall()
 
     instrument_updates: list[tuple[Optional[int], Optional[str], Optional[str], int]] = []
-    profile_upserts: list[tuple[int, Optional[str], Optional[int], Optional[str], Optional[str], Optional[float], Optional[str], str]] = []
+    profile_upserts: list[
+        tuple[
+            int,
+            Optional[str],
+            Optional[int],
+            Optional[str],
+            Optional[str],
+            Optional[float],
+            Optional[str],
+            Optional[str],
+            Optional[str],
+            Optional[str],
+            Optional[str],
+            Optional[int],
+            Optional[str],
+            str,
+        ]
+    ] = []
 
     for row in instruments:
         instrument_id = int(row["instrument_id"])
@@ -293,15 +418,46 @@ def refresh_product_profile(conn: sqlite3.Connection) -> ProfileSyncStats:
         current_cost = current_costs.get(instrument_id)
         ongoing_charges = current_cost[0] if current_cost else None
         ongoing_charges_asof = current_cost[1] if current_cost else None
+        metadata = latest_metadata.get(instrument_id, {})
+        benchmark_name = _normalize_text_value(metadata.get("benchmark_name"))
+        asset_class_hint = _normalize_text_value(metadata.get("asset_class_hint"))
+        domicile_country = _normalize_text_value(metadata.get("domicile_country"))
+        replication_method = _normalize_text_value(metadata.get("replication_method"))
+        hedged_flag = _coerce_optional_flag(metadata.get("hedged_flag"))
+        hedged_target = _normalize_text_value(metadata.get("hedged_target"))
 
         if distribution_policy is not None:
             stats.distributions_synced += 1
         if ongoing_charges is not None:
             stats.costs_synced += 1
+        if any(
+            value is not None
+            for value in (
+                benchmark_name,
+                asset_class_hint,
+                domicile_country,
+                replication_method,
+                hedged_flag,
+                hedged_target,
+            )
+        ):
+            stats.metadata_synced += 1
 
         if any(
             value is not None
-            for value in (distribution_policy, next_ucits, next_source, ongoing_charges, ongoing_charges_asof)
+            for value in (
+                distribution_policy,
+                next_ucits,
+                next_source,
+                ongoing_charges,
+                ongoing_charges_asof,
+                benchmark_name,
+                asset_class_hint,
+                domicile_country,
+                replication_method,
+                hedged_flag,
+                hedged_target,
+            )
         ):
             profile_upserts.append(
                 (
@@ -312,6 +468,12 @@ def refresh_product_profile(conn: sqlite3.Connection) -> ProfileSyncStats:
                     next_ucits_updated_at,
                     ongoing_charges,
                     ongoing_charges_asof,
+                    benchmark_name,
+                    asset_class_hint,
+                    domicile_country,
+                    replication_method,
+                    hedged_flag,
+                    hedged_target,
                     ts,
                 )
             )
@@ -338,9 +500,15 @@ def refresh_product_profile(conn: sqlite3.Connection) -> ProfileSyncStats:
                 ucits_updated_at,
                 ongoing_charges,
                 ongoing_charges_asof,
+                benchmark_name,
+                asset_class_hint,
+                domicile_country,
+                replication_method,
+                hedged_flag,
+                hedged_target,
                 updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(instrument_id) DO UPDATE SET
                 distribution_policy = COALESCE(excluded.distribution_policy, product_profile.distribution_policy),
                 ucits_flag = COALESCE(excluded.ucits_flag, product_profile.ucits_flag),
@@ -348,6 +516,12 @@ def refresh_product_profile(conn: sqlite3.Connection) -> ProfileSyncStats:
                 ucits_updated_at = COALESCE(excluded.ucits_updated_at, product_profile.ucits_updated_at),
                 ongoing_charges = COALESCE(excluded.ongoing_charges, product_profile.ongoing_charges),
                 ongoing_charges_asof = COALESCE(excluded.ongoing_charges_asof, product_profile.ongoing_charges_asof),
+                benchmark_name = COALESCE(excluded.benchmark_name, product_profile.benchmark_name),
+                asset_class_hint = COALESCE(excluded.asset_class_hint, product_profile.asset_class_hint),
+                domicile_country = COALESCE(excluded.domicile_country, product_profile.domicile_country),
+                replication_method = COALESCE(excluded.replication_method, product_profile.replication_method),
+                hedged_flag = COALESCE(excluded.hedged_flag, product_profile.hedged_flag),
+                hedged_target = COALESCE(excluded.hedged_target, product_profile.hedged_target),
                 updated_at = excluded.updated_at
             """,
             profile_upserts,
