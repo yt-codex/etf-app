@@ -1,0 +1,986 @@
+#!/usr/bin/env python3
+"""Stage 2.5 Amundi metadata enrichment via monthly factsheets (PDF)."""
+
+from __future__ import annotations
+
+import argparse
+import datetime as dt
+import hashlib
+import io
+import json
+import re
+import sqlite3
+import sys
+import time
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Optional
+
+import requests
+from pypdf import PdfReader
+
+try:
+    import fitz  # type: ignore
+except Exception:
+    fitz = None
+
+PARSER_VERSION = "stage2_5_amundi_enrich_v1"
+AMUNDI_SOURCE = "amundi_monthly_factsheet"
+FACTSHEET_TEMPLATE = (
+    "https://www.amundietf.ch/pdfDocuments/monthly-factsheet/{ISIN_UPPER}/ENG/CHE/INSTITUTIONNEL/ETF"
+)
+SELF_TEST_ISIN = "LU1407890547"
+
+
+@dataclass
+class ProbeResult:
+    accepted: bool
+    reason: str
+    status_code: Optional[int]
+    content_type: Optional[str]
+    final_url: Optional[str]
+    method: str
+    first_bytes_hex: Optional[str]
+
+
+@dataclass
+class DownloadResult:
+    success: bool
+    pdf_bytes: Optional[bytes]
+    final_url: Optional[str]
+    from_cache: bool
+    error: Optional[str]
+    cache_path: Optional[Path]
+    http_status: Optional[int]
+    content_type: Optional[str]
+
+
+def log(message: str) -> None:
+    ts = dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    print(f"[{ts}] {message}")
+
+
+def normalize_space(value: Optional[str]) -> str:
+    if not value:
+        return ""
+    return re.sub(r"\s+", " ", value).strip()
+
+
+def parse_args(argv: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Stage 2.5 Amundi enrichment")
+    parser.add_argument("--db-path", default="stage1_etf.db", help="Path to SQLite DB")
+    parser.add_argument("--cache-dir", default="kid_cache", help="Local PDF cache directory")
+    parser.add_argument("--limit", type=int, default=2000, help="Maximum instruments to attempt")
+    parser.add_argument(
+        "--venue",
+        choices=["XLON", "XETR", "ALL"],
+        default="ALL",
+        help="Primary venue filter",
+    )
+    parser.add_argument("--rate-limit", type=float, default=0.2, help="HTTP delay in seconds")
+    parser.add_argument("--timeout", type=int, default=20, help="HTTP timeout seconds")
+    parser.add_argument("--max-retries", type=int, default=1, help="HTTP retry count")
+    parser.add_argument(
+        "--self-test",
+        action="store_true",
+        help="Fetch+parse the LU1407890547 factsheet and print extracted fields.",
+    )
+    return parser.parse_args(argv)
+
+
+class HttpClient:
+    def __init__(self, rate_limit: float, timeout: int, max_retries: int) -> None:
+        self.rate_limit = max(0.0, rate_limit)
+        self.timeout = timeout
+        self.max_retries = max(0, max_retries)
+        self.last_request_at = 0.0
+        self.session = requests.Session()
+        self.session.headers.update(
+            {
+                "User-Agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/124.0.0.0 Safari/537.36"
+                ),
+                "Accept": "application/pdf,application/octet-stream;q=0.9,*/*;q=0.8",
+                "Accept-Language": "en-GB,en;q=0.9",
+            }
+        )
+
+    def _throttle(self) -> None:
+        elapsed = time.monotonic() - self.last_request_at
+        if elapsed < self.rate_limit:
+            time.sleep(self.rate_limit - elapsed)
+
+    def get(self, url: str, *, stream: bool = False, timeout: Optional[int] = None) -> requests.Response:
+        attempt = 0
+        request_timeout = timeout or self.timeout
+        while attempt <= self.max_retries:
+            attempt += 1
+            try:
+                self._throttle()
+                resp = self.session.get(
+                    url,
+                    timeout=request_timeout,
+                    allow_redirects=True,
+                    stream=stream,
+                )
+                self.last_request_at = time.monotonic()
+                if resp.status_code in {429, 500, 502, 503, 504} and attempt <= self.max_retries:
+                    time.sleep(min(2**attempt, 8))
+                    continue
+                return resp
+            except requests.RequestException:
+                if attempt <= self.max_retries:
+                    time.sleep(min(2**attempt, 8))
+                    continue
+                raise
+        raise RuntimeError("GET request failed unexpectedly")
+
+    def head(self, url: str, *, timeout: Optional[int] = None) -> requests.Response:
+        attempt = 0
+        request_timeout = timeout or self.timeout
+        while attempt <= self.max_retries:
+            attempt += 1
+            try:
+                self._throttle()
+                resp = self.session.head(url, timeout=request_timeout, allow_redirects=True)
+                self.last_request_at = time.monotonic()
+                if resp.status_code in {429, 500, 502, 503, 504} and attempt <= self.max_retries:
+                    time.sleep(min(2**attempt, 8))
+                    continue
+                return resp
+            except requests.RequestException:
+                if attempt <= self.max_retries:
+                    time.sleep(min(2**attempt, 8))
+                    continue
+                raise
+        raise RuntimeError("HEAD request failed unexpectedly")
+
+
+def now_utc_iso() -> str:
+    return dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def venue_scope(arg: str) -> list[str]:
+    if arg == "XLON":
+        return ["XLON"]
+    if arg == "XETR":
+        return ["XETR"]
+    return ["XLON", "XETR"]
+
+
+def build_factsheet_url(isin: str) -> str:
+    return FACTSHEET_TEMPLATE.format(ISIN_UPPER=isin.upper())
+
+
+def is_pdf_probe_success(content_type: Optional[str], final_url: Optional[str], first_bytes: bytes) -> bool:
+    ctype = (content_type or "").lower()
+    if "pdf" in ctype:
+        return True
+    if final_url and final_url.lower().endswith(".pdf"):
+        return True
+    if first_bytes.startswith(b"%PDF"):
+        return True
+    return False
+
+
+def probe_pdf_url(client: HttpClient, candidate_url: str) -> ProbeResult:
+    try:
+        head_resp = client.head(candidate_url, timeout=12)
+        head_status = int(head_resp.status_code)
+        head_type = head_resp.headers.get("content-type")
+        head_final = head_resp.url or candidate_url
+        if head_status == 200 and "pdf" in (head_type or "").lower():
+            return ProbeResult(
+                accepted=True,
+                reason="head_200_pdf_content_type",
+                status_code=head_status,
+                content_type=head_type,
+                final_url=head_final,
+                method="HEAD",
+                first_bytes_hex=None,
+            )
+    except requests.RequestException as exc:
+        head_status = None
+        head_type = None
+        head_final = candidate_url
+        head_err = f"head_error:{exc.__class__.__name__}"
+    else:
+        head_err = f"head_status_{head_status}" if head_status != 200 else "head_non_pdf"
+
+    try:
+        get_resp = client.get(candidate_url, stream=True, timeout=12)
+        status = int(get_resp.status_code)
+        ctype = get_resp.headers.get("content-type")
+        final_url = get_resp.url or candidate_url
+        first_bytes = b""
+        try:
+            for chunk in get_resp.iter_content(chunk_size=1024):
+                if chunk:
+                    first_bytes = chunk[:1024]
+                    break
+        finally:
+            get_resp.close()
+    except requests.RequestException as exc:
+        return ProbeResult(
+            accepted=False,
+            reason=f"{head_err}|get_error:{exc.__class__.__name__}",
+            status_code=head_status,
+            content_type=head_type,
+            final_url=head_final,
+            method="GET",
+            first_bytes_hex=None,
+        )
+
+    accepted = status == 200 and is_pdf_probe_success(ctype, final_url, first_bytes)
+    reason = "get_200_pdf_probe_ok" if accepted else f"{head_err}|get_status_{status}"
+    return ProbeResult(
+        accepted=accepted,
+        reason=reason,
+        status_code=status,
+        content_type=ctype,
+        final_url=final_url,
+        method="GET",
+        first_bytes_hex=first_bytes[:8].hex() if first_bytes else None,
+    )
+
+
+def download_pdf(client: HttpClient, url: str, cache_dir: Path) -> DownloadResult:
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    cache_key = hashlib.sha256(url.encode("utf-8")).hexdigest()
+    cache_path = cache_dir / f"{cache_key}.pdf"
+    if cache_path.exists():
+        return DownloadResult(
+            success=True,
+            pdf_bytes=cache_path.read_bytes(),
+            final_url=url,
+            from_cache=True,
+            error=None,
+            cache_path=cache_path,
+            http_status=200,
+            content_type="application/pdf",
+        )
+
+    try:
+        response = client.get(url, stream=False)
+    except requests.RequestException as exc:
+        return DownloadResult(
+            success=False,
+            pdf_bytes=None,
+            final_url=None,
+            from_cache=False,
+            error=f"request_error:{exc.__class__.__name__}",
+            cache_path=cache_path,
+            http_status=None,
+            content_type=None,
+        )
+
+    status = int(response.status_code)
+    final_url = response.url or url
+    content_type = response.headers.get("content-type")
+    data = response.content or b""
+
+    if status != 200:
+        return DownloadResult(
+            success=False,
+            pdf_bytes=None,
+            final_url=final_url,
+            from_cache=False,
+            error=f"http_{status}",
+            cache_path=cache_path,
+            http_status=status,
+            content_type=content_type,
+        )
+
+    if not is_pdf_probe_success(content_type, final_url, data[:8]):
+        marker = data.find(b"%PDF")
+        if marker == -1:
+            return DownloadResult(
+                success=False,
+                pdf_bytes=None,
+                final_url=final_url,
+                from_cache=False,
+                error="not_pdf_content",
+                cache_path=cache_path,
+                http_status=status,
+                content_type=content_type,
+            )
+        data = data[marker:]
+
+    cache_path.write_bytes(data)
+    return DownloadResult(
+        success=True,
+        pdf_bytes=data,
+        final_url=final_url,
+        from_cache=False,
+        error=None,
+        cache_path=cache_path,
+        http_status=status,
+        content_type=content_type,
+    )
+
+
+def extract_text_pypdf(pdf_bytes: bytes) -> tuple[str, int, Optional[str]]:
+    try:
+        reader = PdfReader(io.BytesIO(pdf_bytes))
+        pages = [(page.extract_text() or "") for page in reader.pages]
+        return "\n".join(pages), len(pages), None
+    except Exception as exc:
+        return "", 0, f"pypdf_exception:{exc.__class__.__name__}"
+
+
+def extract_text_fitz(pdf_bytes: bytes) -> tuple[str, int, Optional[str]]:
+    if fitz is None:
+        return "", 0, "fitz_unavailable"
+    doc = None
+    try:
+        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+        pages = [page.get_text("text") or "" for page in doc]
+        return "\n".join(pages), len(pages), None
+    except Exception as exc:
+        return "", 0, f"fitz_exception:{exc.__class__.__name__}"
+    finally:
+        if doc is not None:
+            doc.close()
+
+
+def extract_pdf_text_with_fallback(pdf_bytes: bytes) -> dict[str, object]:
+    pypdf_text, pypdf_pages, pypdf_err = extract_text_pypdf(pdf_bytes)
+    errors: list[str] = []
+    if pypdf_err:
+        errors.append(pypdf_err)
+    normalized = normalize_space(pypdf_text)
+    has_keywords = bool(
+        re.search(
+            r"(Management fees and other administrative or operating costs|Type of shares)",
+            normalized,
+            flags=re.IGNORECASE,
+        )
+    )
+    if len(normalized) >= 600 and has_keywords:
+        return {
+            "text": pypdf_text,
+            "page_count": pypdf_pages,
+            "extractor": "pypdf",
+            "fallback_used": False,
+            "errors": errors,
+        }
+
+    fitz_text, fitz_pages, fitz_err = extract_text_fitz(pdf_bytes)
+    if fitz_err:
+        errors.append(fitz_err)
+    if fitz_text:
+        return {
+            "text": fitz_text,
+            "page_count": fitz_pages or pypdf_pages,
+            "extractor": "fitz",
+            "fallback_used": True,
+            "errors": errors,
+        }
+    return {
+        "text": pypdf_text,
+        "page_count": pypdf_pages,
+        "extractor": "pypdf",
+        "fallback_used": False,
+        "errors": errors,
+    }
+
+
+def split_lines(text: str) -> list[str]:
+    lines: list[str] = []
+    for raw in re.split(r"[\r\n]+", text):
+        norm = normalize_space(raw)
+        if norm:
+            lines.append(norm)
+    return lines
+
+
+def parse_percent_token(token: str) -> Optional[float]:
+    cleaned = token.strip().replace(",", ".")
+    try:
+        value = float(cleaned)
+    except ValueError:
+        return None
+    if value < 0 or value > 100:
+        return None
+    return value
+
+
+def extract_fee(text: str, lines: list[str]) -> tuple[Optional[float], Optional[str]]:
+    label_upper = "MANAGEMENT FEES AND OTHER ADMINISTRATIVE OR OPERATING COSTS"
+    for line in lines:
+        if label_upper in line.upper():
+            match = re.search(r"([0-9]+(?:[.,][0-9]+)?)\s*%", line, flags=re.IGNORECASE)
+            if match:
+                parsed = parse_percent_token(match.group(1))
+                if parsed is not None:
+                    return parsed, line
+
+    normalized = normalize_space(text)
+    m = re.search(
+        r"Management fees and other administrative or operating costs.{0,180}?([0-9]+(?:[.,][0-9]+)?)\s*%",
+        normalized,
+        flags=re.IGNORECASE,
+    )
+    if m:
+        parsed = parse_percent_token(m.group(1))
+        if parsed is not None:
+            return parsed, m.group(0)
+    return None, None
+
+
+def map_distribution(token: str) -> Optional[str]:
+    t = token.strip().lower()
+    if t.startswith("accumulat"):
+        return "Accumulating"
+    if t.startswith("distribut"):
+        return "Distributing"
+    return None
+
+
+def extract_distribution(text: str, lines: list[str]) -> tuple[Optional[str], Optional[str]]:
+    pattern = re.compile(
+        r"Type of shares.{0,100}?(Accumulation|Distribution|Accumulating|Distributing)",
+        flags=re.IGNORECASE,
+    )
+    for line in lines:
+        m = pattern.search(line)
+        if m:
+            mapped = map_distribution(m.group(1))
+            if mapped:
+                return mapped, line
+
+    normalized = normalize_space(text)
+    m = pattern.search(normalized)
+    if m:
+        mapped = map_distribution(m.group(1))
+        if mapped:
+            return mapped, m.group(0)
+    return None, None
+
+
+def extract_ucits(text: str, lines: list[str]) -> tuple[Optional[int], Optional[str]]:
+    for line in lines:
+        if "UCITS COMPLIANT" in line.upper():
+            upper = line.upper()
+            if re.search(r"\bNO\b", upper):
+                return 0, line
+            if re.search(r"\bYES\b", upper):
+                return 1, line
+            if "UCITS" in upper:
+                return 1, line
+            return None, line
+
+    normalized = normalize_space(text)
+    m = re.search(r"UCITS compliant.{0,80}", normalized, flags=re.IGNORECASE)
+    if m:
+        snippet = m.group(0)
+        upper = snippet.upper()
+        if re.search(r"\bNO\b", upper):
+            return 0, snippet
+        if re.search(r"\bYES\b", upper):
+            return 1, snippet
+        if "UCITS" in upper:
+            return 1, snippet
+        return None, snippet
+    return None, None
+
+
+def parse_factsheet_pdf(pdf_bytes: bytes) -> dict[str, object]:
+    text_meta = extract_pdf_text_with_fallback(pdf_bytes)
+    text = str(text_meta.get("text") or "")
+    lines = split_lines(text)
+
+    fee, fee_line = extract_fee(text, lines)
+    distribution, distribution_line = extract_distribution(text, lines)
+    ucits, ucits_line = extract_ucits(text, lines)
+
+    return {
+        "ter": fee,
+        "use_of_income": distribution,
+        "ucits_compliant": ucits,
+        "matched_fee_line": fee_line,
+        "matched_distribution_line": distribution_line,
+        "matched_ucits_line": ucits_line,
+        "extractor": text_meta.get("extractor"),
+        "fallback_used": text_meta.get("fallback_used"),
+        "page_count": text_meta.get("page_count"),
+        "extract_errors": text_meta.get("errors") or [],
+        "text_char_count": len(normalize_space(text)),
+    }
+
+
+def ensure_tables_and_view(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS issuer_metadata_snapshot(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            instrument_id INTEGER,
+            asof_date TEXT,
+            source TEXT,
+            source_url TEXT,
+            ter REAL NULL,
+            use_of_income TEXT NULL,
+            ucits_compliant INTEGER NULL,
+            quality_flag TEXT,
+            raw_json TEXT
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS instrument_url_map(
+            instrument_id INTEGER,
+            url_type TEXT,
+            url TEXT,
+            UNIQUE(instrument_id, url_type)
+        )
+        """
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_instrument_url_map_instrument ON instrument_url_map(instrument_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_issuer_metadata_snapshot_instrument ON issuer_metadata_snapshot(instrument_id)")
+
+    conn.execute("DROP VIEW IF EXISTS instrument_cost_current")
+    conn.execute(
+        """
+        CREATE VIEW instrument_cost_current AS
+        WITH ranked AS (
+            SELECT
+                instrument_id,
+                asof_date,
+                ongoing_charges,
+                doc_id,
+                quality_flag,
+                cost_id,
+                ROW_NUMBER() OVER (
+                    PARTITION BY instrument_id
+                    ORDER BY asof_date DESC, cost_id DESC
+                ) AS rn
+            FROM cost_snapshot
+            WHERE ongoing_charges IS NOT NULL
+              AND quality_flag IN ('ok', 'partial', 'issuer_page_ok', 'amundi_factsheet_ok')
+        )
+        SELECT
+            instrument_id,
+            asof_date,
+            ongoing_charges,
+            doc_id,
+            quality_flag
+        FROM ranked
+        WHERE rn = 1
+        """
+    )
+
+
+def load_targets(conn: sqlite3.Connection, limit: int, venue: str) -> list[sqlite3.Row]:
+    venues = venue_scope(venue)
+    placeholders = ",".join("?" for _ in venues)
+    sql = f"""
+        SELECT
+            i.instrument_id,
+            i.isin,
+            i.instrument_name,
+            l.ticker,
+            l.venue_mic,
+            COALESCE(iss.normalized_name, iss.issuer_name, '') AS issuer_normalized
+        FROM instrument i
+        JOIN listing l
+          ON l.instrument_id = i.instrument_id
+         AND l.primary_flag = 1
+        LEFT JOIN issuer iss ON iss.issuer_id = i.issuer_id
+        LEFT JOIN instrument_cost_current icc ON icc.instrument_id = i.instrument_id
+        WHERE i.universe_mvp_flag = 1
+          AND l.venue_mic IN ({placeholders})
+          AND icc.ongoing_charges IS NULL
+          AND (
+              UPPER(COALESCE(iss.normalized_name, '')) LIKE '%AMUNDI%'
+              OR UPPER(i.instrument_name) LIKE '%AMUNDI%'
+              OR UPPER(COALESCE(iss.normalized_name, '')) LIKE '%MULTI UNITS%'
+              OR UPPER(i.instrument_name) LIKE '%LYXOR%'
+          )
+        ORDER BY i.isin
+        LIMIT ?
+    """
+    params: list[object] = [*venues, limit]
+    return conn.execute(sql, params).fetchall()
+
+
+def upsert_instrument_url_map(conn: sqlite3.Connection, instrument_id: int, url: str) -> None:
+    conn.execute(
+        """
+        INSERT INTO instrument_url_map(instrument_id, url_type, url)
+        VALUES (?, 'amundi_monthly_factsheet', ?)
+        ON CONFLICT(instrument_id, url_type) DO UPDATE SET
+            url = excluded.url
+        """,
+        (instrument_id, url),
+    )
+
+
+def table_has_column(conn: sqlite3.Connection, table: str, column: str) -> bool:
+    rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+    return any(row["name"] == column for row in rows)
+
+
+def maybe_update_product_profile(conn: sqlite3.Connection, instrument_id: int, use_of_income: Optional[str]) -> bool:
+    if not use_of_income:
+        return False
+    row = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='product_profile'"
+    ).fetchone()
+    if not row:
+        return False
+    if not table_has_column(conn, "product_profile", "distribution_policy"):
+        return False
+    if not table_has_column(conn, "product_profile", "instrument_id"):
+        return False
+    conn.execute(
+        """
+        INSERT INTO product_profile(instrument_id, distribution_policy)
+        VALUES (?, ?)
+        ON CONFLICT(instrument_id) DO UPDATE SET
+            distribution_policy = excluded.distribution_policy
+        """,
+        (instrument_id, use_of_income),
+    )
+    return True
+
+
+def insert_issuer_metadata_snapshot(
+    conn: sqlite3.Connection,
+    *,
+    instrument_id: int,
+    asof_date: str,
+    source_url: Optional[str],
+    ter: Optional[float],
+    use_of_income: Optional[str],
+    ucits_compliant: Optional[int],
+    quality_flag: str,
+    raw_json: dict[str, object],
+) -> None:
+    conn.execute(
+        """
+        INSERT INTO issuer_metadata_snapshot(
+            instrument_id,
+            asof_date,
+            source,
+            source_url,
+            ter,
+            use_of_income,
+            ucits_compliant,
+            quality_flag,
+            raw_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            instrument_id,
+            asof_date,
+            AMUNDI_SOURCE,
+            source_url,
+            ter,
+            use_of_income,
+            ucits_compliant,
+            quality_flag,
+            json.dumps(raw_json, ensure_ascii=True),
+        ),
+    )
+
+
+def insert_cost_snapshot_from_ter(
+    conn: sqlite3.Connection,
+    *,
+    instrument_id: int,
+    asof_date: str,
+    ter: float,
+    source_url: str,
+    use_of_income: Optional[str],
+    ucits_compliant: Optional[int],
+) -> None:
+    raw_json = {
+        "source": AMUNDI_SOURCE,
+        "source_url": source_url,
+        "parser_version": PARSER_VERSION,
+        "use_of_income": use_of_income,
+        "ucits_compliant": ucits_compliant,
+    }
+    conn.execute(
+        """
+        INSERT INTO cost_snapshot(
+            instrument_id,
+            asof_date,
+            ongoing_charges,
+            entry_costs,
+            exit_costs,
+            transaction_costs,
+            doc_id,
+            quality_flag,
+            raw_json
+        ) VALUES (?, ?, ?, NULL, NULL, NULL, NULL, 'amundi_factsheet_ok', ?)
+        """,
+        (instrument_id, asof_date, ter, json.dumps(raw_json, ensure_ascii=True)),
+    )
+
+
+def print_kpis(
+    attempted: int,
+    url_ok: int,
+    downloaded: int,
+    fee_parsed: int,
+    distribution_parsed: int,
+    filled: int,
+) -> None:
+    def pct(n: int, d: int) -> float:
+        return (100.0 * n / d) if d else 0.0
+
+    print("\n=== Stage 2.5 Amundi KPIs ===")
+    print(f"attempted instruments: {attempted}")
+    print(f"url_ok%: {pct(url_ok, attempted):.2f}% ({url_ok}/{attempted})")
+    print(f"downloaded%: {pct(downloaded, attempted):.2f}% ({downloaded}/{attempted})")
+    print(f"fee_parsed%: {pct(fee_parsed, attempted):.2f}% ({fee_parsed}/{attempted})")
+    print(
+        f"distribution_parsed%: {pct(distribution_parsed, attempted):.2f}% "
+        f"({distribution_parsed}/{attempted})"
+    )
+    print(f"ongoing_charges_filled%: {pct(filled, attempted):.2f}% ({filled}/{attempted})")
+
+
+def safe_print(value: Optional[str]) -> str:
+    if value is None:
+        return "NULL"
+    return value.encode("ascii", errors="ignore").decode("ascii")
+
+
+def run_self_test(client: HttpClient, cache_dir: Path) -> bool:
+    url = build_factsheet_url(SELF_TEST_ISIN)
+    probe = probe_pdf_url(client, url)
+    print("=== Stage 2.5 Self-test ===")
+    print(f"isin: {SELF_TEST_ISIN}")
+    print(f"url: {url}")
+    print(
+        f"probe: accepted={probe.accepted} method={probe.method} status={probe.status_code} "
+        f"ctype={probe.content_type} reason={probe.reason}"
+    )
+    if not probe.accepted:
+        return False
+
+    dl = download_pdf(client, probe.final_url or url, cache_dir)
+    print(
+        f"download: success={dl.success} from_cache={dl.from_cache} status={dl.http_status} "
+        f"ctype={dl.content_type} error={dl.error}"
+    )
+    if not dl.success or not dl.pdf_bytes:
+        return False
+
+    parsed = parse_factsheet_pdf(dl.pdf_bytes)
+    print(f"fee parsed: {parsed.get('ter')}")
+    print(f"distribution parsed: {parsed.get('use_of_income')}")
+    print(f"ucits parsed: {parsed.get('ucits_compliant')}")
+    print(f"matched fee line: {safe_print(parsed.get('matched_fee_line'))}")
+    print(f"matched distribution line: {safe_print(parsed.get('matched_distribution_line'))}")
+    print(f"matched ucits line: {safe_print(parsed.get('matched_ucits_line'))}")
+    return parsed.get("ter") is not None and parsed.get("use_of_income") is not None
+
+
+def main(argv: list[str]) -> int:
+    args = parse_args(argv)
+    client = HttpClient(rate_limit=args.rate_limit, timeout=args.timeout, max_retries=args.max_retries)
+    cache_dir = Path(args.cache_dir)
+
+    if args.self_test:
+        return 0 if run_self_test(client, cache_dir) else 1
+
+    db_path = Path(args.db_path)
+    if not db_path.exists():
+        raise SystemExit(f"Database not found: {db_path}")
+
+    conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
+    asof_date = dt.date.today().isoformat()
+
+    attempted = 0
+    url_ok = 0
+    downloaded = 0
+    fee_parsed = 0
+    distribution_parsed = 0
+    filled = 0
+    profile_updates = 0
+    sample_rows: list[tuple[str, str, str, str, str, str]] = []
+
+    try:
+        conn.execute("BEGIN")
+        ensure_tables_and_view(conn)
+        targets = load_targets(conn, args.limit, args.venue)
+        attempted = len(targets)
+        log(f"Target Amundi subset loaded: {attempted} rows (venue={args.venue}, limit={args.limit})")
+        if attempted == 0:
+            conn.commit()
+            print_kpis(0, 0, 0, 0, 0, 0)
+            print("\nNo instruments eligible for Stage 2.5.")
+            return 0
+
+        for idx, row in enumerate(targets, start=1):
+            instrument_id = int(row["instrument_id"])
+            isin = str(row["isin"])
+            ticker = str(row["ticker"] or "")
+            factsheet_url = build_factsheet_url(isin)
+            debug: dict[str, object] = {
+                "parser_version": PARSER_VERSION,
+                "instrument_id": instrument_id,
+                "isin": isin,
+                "factsheet_url": factsheet_url,
+                "attempted_at": now_utc_iso(),
+            }
+
+            probe = probe_pdf_url(client, factsheet_url)
+            debug["probe"] = {
+                "accepted": probe.accepted,
+                "reason": probe.reason,
+                "status_code": probe.status_code,
+                "content_type": probe.content_type,
+                "final_url": probe.final_url,
+                "method": probe.method,
+                "first_bytes_hex": probe.first_bytes_hex,
+            }
+            if not probe.accepted:
+                insert_issuer_metadata_snapshot(
+                    conn,
+                    instrument_id=instrument_id,
+                    asof_date=asof_date,
+                    source_url=factsheet_url,
+                    ter=None,
+                    use_of_income=None,
+                    ucits_compliant=None,
+                    quality_flag="download_fail",
+                    raw_json=debug,
+                )
+                if idx % 25 == 0:
+                    log(f"Processed {idx}/{attempted}: download_fail")
+                continue
+
+            url_ok += 1
+            final_url = probe.final_url or factsheet_url
+            upsert_instrument_url_map(conn, instrument_id, final_url)
+
+            dl = download_pdf(client, final_url, cache_dir)
+            debug["download"] = {
+                "success": dl.success,
+                "error": dl.error,
+                "final_url": dl.final_url,
+                "from_cache": dl.from_cache,
+                "status": dl.http_status,
+                "content_type": dl.content_type,
+                "cache_path": str(dl.cache_path) if dl.cache_path else None,
+            }
+            if not dl.success or not dl.pdf_bytes:
+                insert_issuer_metadata_snapshot(
+                    conn,
+                    instrument_id=instrument_id,
+                    asof_date=asof_date,
+                    source_url=final_url,
+                    ter=None,
+                    use_of_income=None,
+                    ucits_compliant=None,
+                    quality_flag="download_fail",
+                    raw_json=debug,
+                )
+                if idx % 25 == 0:
+                    log(f"Processed {idx}/{attempted}: download_fail")
+                continue
+
+            downloaded += 1
+            parsed = parse_factsheet_pdf(dl.pdf_bytes)
+            ter = parsed.get("ter") if isinstance(parsed.get("ter"), (int, float)) else None
+            use_of_income = (
+                str(parsed.get("use_of_income")) if parsed.get("use_of_income") is not None else None
+            )
+            ucits_compliant = (
+                int(parsed.get("ucits_compliant"))
+                if parsed.get("ucits_compliant") is not None
+                else None
+            )
+
+            if ter is not None:
+                fee_parsed += 1
+            if use_of_income is not None:
+                distribution_parsed += 1
+
+            debug["parse"] = {
+                "ter": ter,
+                "use_of_income": use_of_income,
+                "ucits_compliant": ucits_compliant,
+                "matched_fee_line": parsed.get("matched_fee_line"),
+                "matched_distribution_line": parsed.get("matched_distribution_line"),
+                "matched_ucits_line": parsed.get("matched_ucits_line"),
+                "extractor": parsed.get("extractor"),
+                "fallback_used": parsed.get("fallback_used"),
+                "page_count": parsed.get("page_count"),
+                "extract_errors": parsed.get("extract_errors"),
+                "text_char_count": parsed.get("text_char_count"),
+            }
+
+            quality = "ok" if ter is not None else "parse_fail"
+            if ter is not None:
+                insert_cost_snapshot_from_ter(
+                    conn,
+                    instrument_id=instrument_id,
+                    asof_date=asof_date,
+                    ter=float(ter),
+                    source_url=final_url,
+                    use_of_income=use_of_income,
+                    ucits_compliant=ucits_compliant,
+                )
+                filled += 1
+                if len(sample_rows) < 20:
+                    sample_rows.append(
+                        (
+                            isin,
+                            ticker,
+                            final_url,
+                            f"{float(ter):.4f}",
+                            use_of_income or "NULL",
+                            str(ucits_compliant) if ucits_compliant is not None else "NULL",
+                        )
+                    )
+
+            if maybe_update_product_profile(conn, instrument_id, use_of_income):
+                profile_updates += 1
+
+            insert_issuer_metadata_snapshot(
+                conn,
+                instrument_id=instrument_id,
+                asof_date=asof_date,
+                source_url=final_url,
+                ter=float(ter) if ter is not None else None,
+                use_of_income=use_of_income,
+                ucits_compliant=ucits_compliant,
+                quality_flag=quality,
+                raw_json=debug,
+            )
+
+            if idx % 25 == 0:
+                log(
+                    f"Processed {idx}/{attempted}: url_ok={url_ok}, downloaded={downloaded}, "
+                    f"fee_parsed={fee_parsed}, distribution_parsed={distribution_parsed}, filled={filled}"
+                )
+
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+    print_kpis(attempted, url_ok, downloaded, fee_parsed, distribution_parsed, filled)
+    print(f"\nproduct_profile distribution_policy updates: {profile_updates}")
+    print("\n=== Sample 20 (ISIN, ticker, factsheet_url, TER, distribution, ucits) ===")
+    if not sample_rows:
+        print("No successful fee parses.")
+    else:
+        for sample in sample_rows:
+            print(" | ".join(sample))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))

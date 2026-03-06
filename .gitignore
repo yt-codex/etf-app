@@ -1,0 +1,14 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+.venv/
+*.egg-info/
+artifacts/
+db_csv_export/
+kid_cache/
+*.db
+*.sqlite
+*.csv
+*.xls
+*.html
