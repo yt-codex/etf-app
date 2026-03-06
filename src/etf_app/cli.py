@@ -5,6 +5,7 @@ import sqlite3
 from pathlib import Path
 
 from etf_app import listing_hygiene, listing_ingest, universe_refine
+from etf_app.completeness import generate_completeness_report
 from etf_app.recommend import run_recommendations
 from etf_app.taxonomy import ensure_taxonomy_schema, load_universe_rows, print_taxonomy_stats, upsert_taxonomy
 
@@ -48,6 +49,39 @@ def build_parser() -> argparse.ArgumentParser:
         help="Build normalized taxonomy and legacy compatibility classifications",
     )
     classify.add_argument("--db-path", default="stage1_etf.db", help="Path to SQLite DB")
+
+    completeness = subparsers.add_parser(
+        "report-completeness",
+        help="Write a JSON completeness report for profile, taxonomy, and strategy readiness",
+    )
+    completeness.add_argument("--db-path", default="stage1_etf.db", help="Path to SQLite DB")
+    completeness.add_argument(
+        "--artifacts-dir",
+        default="artifacts",
+        help="Directory for generated report artifacts",
+    )
+    completeness.add_argument(
+        "--venue",
+        choices=["XLON", "XETR", "ALL"],
+        default="ALL",
+        help="Primary venue filter for strategy-readiness stats",
+    )
+    completeness.add_argument(
+        "--preferred-currency-order",
+        default="USD,EUR,GBP",
+        help="Currency sort order, comma separated (default: USD,EUR,GBP)",
+    )
+    completeness.add_argument("--top-n", type=int, default=5, help="Top candidates per bucket")
+    completeness.add_argument(
+        "--allow-missing-fees",
+        action="store_true",
+        help="Allow strategy-readiness fallbacks that tolerate missing fees",
+    )
+    completeness.add_argument(
+        "--allow-missing-currency",
+        action="store_true",
+        help="Allow strategy-readiness stats to tolerate missing trading currency",
+    )
 
     recommend = subparsers.add_parser(
         "recommend",
@@ -95,6 +129,15 @@ def run_patch_data(db_path: str, artifacts_dir: str) -> int:
 
     listing_hygiene.main(["--db-path", db_path, "--output-csv", primary_csv])
     universe_refine.main(["--db-path", db_path, "--output-csv", universe_csv])
+    run_completeness_report(
+        db_path=db_path,
+        artifacts_dir=artifacts_dir,
+        venue="ALL",
+        preferred_currency_order="USD,EUR,GBP",
+        top_n=5,
+        allow_missing_fees=False,
+        allow_missing_currency=False,
+    )
     return 0
 
 
@@ -117,12 +160,42 @@ def run_classify_taxonomy(db_path: str) -> int:
         conn.commit()
         print(f"classified instruments: {updated}")
         print_taxonomy_stats(conn)
+        run_completeness_report(
+            db_path=db_path,
+            artifacts_dir="artifacts",
+            venue="ALL",
+            preferred_currency_order="USD,EUR,GBP",
+            top_n=5,
+            allow_missing_fees=False,
+            allow_missing_currency=False,
+        )
         return 0
     except Exception:
         conn.rollback()
         raise
     finally:
         conn.close()
+
+
+def run_completeness_report(
+    db_path: str,
+    artifacts_dir: str,
+    venue: str,
+    preferred_currency_order: str,
+    top_n: int,
+    allow_missing_fees: bool,
+    allow_missing_currency: bool,
+) -> int:
+    generate_completeness_report(
+        db_path=db_path,
+        artifacts_dir=artifacts_dir,
+        venue=venue,
+        preferred_currency_order=preferred_currency_order,
+        top_n=top_n,
+        allow_missing_fees=allow_missing_fees,
+        allow_missing_currency=allow_missing_currency,
+    )
+    return 0
 
 
 def run_recommend_strategies(
@@ -153,6 +226,16 @@ def main(argv: list[str] | None = None) -> int:
         return run_stage1_refresh(args.db_path, args.artifacts_dir, args.skip_cboe)
     if args.command in {"build-taxonomy", "classify-taxonomy"}:
         return run_classify_taxonomy(args.db_path)
+    if args.command == "report-completeness":
+        return run_completeness_report(
+            args.db_path,
+            args.artifacts_dir,
+            args.venue,
+            args.preferred_currency_order,
+            args.top_n,
+            args.allow_missing_fees,
+            args.allow_missing_currency,
+        )
     if args.command in {"recommend", "recommend-strategies"}:
         return run_recommend_strategies(
             args.db_path,
