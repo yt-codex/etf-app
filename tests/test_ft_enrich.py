@@ -9,6 +9,10 @@ from etf_app.taxonomy import ensure_taxonomy_schema
 
 SUMMARY_HTML = """
 <div class="mod-tearsheet-overview__header__name">iShares Core S&P 500 UCITS ETF USD (Acc)</div>
+<div class="mod-aside__module">
+  <h2 class="mod-ui-header--event o-teaser-collection__heading o-teaser-collection__heading--full-width">Objective</h2>
+  <div>The investment objective of the Fund is to deliver the net total return performance of the Benchmark Index (being the S&amp;P 500 Index), less the fees and expenses of the Fund.</div>
+</div>
 <table class="mod-ui-table mod-ui-table--two-column mod-profile-and-investment-app__table--profile">
   <tr><th>Investment style (stocks)</th><td>Market Cap: Large<br/>Investment Style: Blend</td></tr>
   <tr><th>Income treatment</th><td>Accumulation</td></tr>
@@ -60,6 +64,22 @@ SEARCH_HTML = """
   <a href="/data/etfs/tearsheet/summary?s=CSPX:LSE:USD">iShares Core S&amp;P 500 UCITS ETF USD (Acc)</a>
   <a href="/data/equities/tearsheet/summary?s=NOTETF">Ignore non ETF result</a>
 </div>
+"""
+
+
+NASDAQ_OBJECTIVE_HTML = """
+<div class="mod-tearsheet-overview__header__name">Amundi Core Nasdaq-100 Swap UCITS ETF Acc</div>
+<div class="mod-aside__module">
+  <h2 class="mod-ui-header--event o-teaser-collection__heading o-teaser-collection__heading--full-width">Objective</h2>
+  <div>The investment objective of the Sub-Fund is to track both the upward and the downward evolution of the NASDAQ-100 Notional Net Total Return index (the “Index”) denominated in US Dollars.</div>
+</div>
+<table class="mod-ui-table mod-ui-table--two-column">
+  <tr><th>Investment style (stocks)</th><td>Market Cap: Large<br/>Investment Style: Growth</td></tr>
+  <tr><th>Income treatment</th><td>Accumulation</td></tr>
+  <tr><th>Domicile</th><td>Luxembourg</td></tr>
+  <tr><th>ISIN</th><td>LU1829221024</td></tr>
+  <tr><th>Fund size</th><td>4.82bn GBP As of Feb 28 2026</td></tr>
+</table>
 """
 
 
@@ -121,6 +141,7 @@ def test_parse_ft_summary_html_extracts_profile_metadata() -> None:
     assert parsed["isin"] == "IE00B5BMR087"
     assert parsed["use_of_income"] == "Accumulating"
     assert parsed["ucits_compliant"] == 1
+    assert parsed["benchmark_name"] == "S&P 500 Index"
     assert parsed["asset_class_hint"] == "Equity"
     assert parsed["domicile_country"] == "Ireland"
     assert parsed["fund_size_value"] == 102_950_000_000.0
@@ -129,6 +150,14 @@ def test_parse_ft_summary_html_extracts_profile_metadata() -> None:
     assert parsed["fund_size_scope"] == "fund"
     assert parsed["equity_size_hint"] == "large"
     assert parsed["equity_style_hint"] == "blend"
+
+
+def test_parse_ft_summary_html_extracts_benchmark_name_from_objective_variants() -> None:
+    parsed = ft_enrich.parse_ft_summary_html(NASDAQ_OBJECTIVE_HTML)
+
+    assert parsed["benchmark_name"] == "NASDAQ-100 Notional Net Total Return index"
+    assert parsed["equity_size_hint"] == "large"
+    assert parsed["equity_style_hint"] == "growth"
 
 
 def test_parse_ft_summary_html_falls_back_to_share_class_size_and_variant_labels() -> None:
@@ -256,7 +285,7 @@ def test_run_ft_metadata_backfill_updates_profile_and_taxonomy(tmp_path, monkeyp
     conn.row_factory = sqlite3.Row
     profile_row = conn.execute(
         """
-        SELECT distribution_policy, fund_size_value, fund_size_currency, equity_size_hint, equity_style_hint, sector_hint, sector_weight
+        SELECT benchmark_name, distribution_policy, fund_size_value, fund_size_currency, equity_size_hint, equity_style_hint, sector_hint, sector_weight
         FROM product_profile
         WHERE instrument_id = 1
         """
@@ -271,6 +300,7 @@ def test_run_ft_metadata_backfill_updates_profile_and_taxonomy(tmp_path, monkeyp
     conn.close()
 
     assert dict(profile_row) == {
+        "benchmark_name": "S&P 500 Index",
         "distribution_policy": "Accumulating",
         "fund_size_value": 102_950_000_000.0,
         "fund_size_currency": "GBP",

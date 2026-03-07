@@ -154,12 +154,14 @@ def load_targets(
         taxonomy_join = "LEFT JOIN instrument_taxonomy t ON t.instrument_id = i.instrument_id"
         taxonomy_filter = """
           OR t.instrument_id IS NULL
+          OR t.geography_region IS NULL
           OR t.equity_size IS NULL
           OR t.equity_style IS NULL
           OR t.sector IS NULL
         """
         taxonomy_order = """
             CASE WHEN t.instrument_id IS NULL THEN 0 ELSE 1 END,
+            CASE WHEN t.geography_region IS NULL THEN 0 ELSE 1 END,
             CASE WHEN t.equity_size IS NULL THEN 0 ELSE 1 END,
             CASE WHEN t.equity_style IS NULL THEN 0 ELSE 1 END,
             CASE WHEN t.sector IS NULL THEN 0 ELSE 1 END,
@@ -211,6 +213,8 @@ def load_targets(
           {identifier_filter}
           AND (
               p.instrument_id IS NULL
+              OR p.benchmark_name IS NULL
+              OR TRIM(p.benchmark_name) = ''
               OR p.distribution_policy IS NULL
               OR p.fund_size_value IS NULL
               OR p.equity_size_hint IS NULL
@@ -220,6 +224,7 @@ def load_targets(
           )
         ORDER BY
             CASE WHEN p.instrument_id IS NULL THEN 0 ELSE 1 END,
+            CASE WHEN p.benchmark_name IS NULL OR TRIM(p.benchmark_name) = '' THEN 0 ELSE 1 END,
             CASE WHEN p.distribution_policy IS NULL THEN 0 ELSE 1 END,
             CASE WHEN p.fund_size_value IS NULL THEN 0 ELSE 1 END,
             CASE WHEN p.equity_size_hint IS NULL THEN 0 ELSE 1 END,
@@ -457,6 +462,41 @@ def normalize_sector_name(value: str) -> Optional[str]:
     return mapping.get(text, text.lower().replace(" ", "_"))
 
 
+def extract_objective_text(soup: BeautifulSoup) -> Optional[str]:
+    for module in soup.select("div.mod-aside__module"):
+        heading = module.find(["h2", "h3"])
+        heading_text = normalize_space(heading.get_text(" ", strip=True)) if heading else ""
+        if heading_text.lower() != "objective":
+            continue
+        text = normalize_space(module.get_text(" ", strip=True))
+        return text or None
+    return None
+
+
+def parse_benchmark_name_from_objective(value: str) -> Optional[str]:
+    text = normalize_space(value)
+    if not text:
+        return None
+    patterns = (
+        r"Benchmark Index\s*\(being the\s+([^)]+?)\)",
+        r"track both the upward and the downward evolution of the\s+(.+?)\s+\(the\s+[\"“]?Index[\"”]?\)",
+        r"track the performance of\s+(.+?)\s+\(the\s+[\"“]?Index[\"”]?\)",
+        r"deliver the net total return performance of the\s+(.+?),\s+less the fees",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, text, flags=re.IGNORECASE)
+        if not match:
+            continue
+        candidate = normalize_space(match.group(1))
+        if not candidate:
+            continue
+        candidate = re.sub(r"^(?:the\s+)", "", candidate, flags=re.IGNORECASE)
+        if candidate.lower() == "index":
+            continue
+        return candidate
+    return None
+
+
 def extract_fact_rows(soup: BeautifulSoup) -> dict[str, BeautifulSoup]:
     facts: dict[str, BeautifulSoup] = {}
     for row in soup.select("table.mod-ui-table tr"):
@@ -558,11 +598,13 @@ def load_search_queries(conn: sqlite3.Connection, instrument_id: int, expected_i
 def parse_ft_summary_html(html: str) -> dict[str, object]:
     soup = BeautifulSoup(html, "lxml")
     facts = extract_fact_rows(soup)
+    objective_text = extract_objective_text(soup)
     instrument_name = normalize_space(
         soup.select_one(".mod-tearsheet-overview__header__name").get_text(" ", strip=True)
         if soup.select_one(".mod-tearsheet-overview__header__name")
         else ""
     )
+    benchmark_name = parse_benchmark_name_from_objective(objective_text or "")
     investment_style_text = find_fact_cell(facts, "Investment style (stocks)", prefix="Investment style")
     equity_size_hint: Optional[str] = None
     equity_style_hint: Optional[str] = None
@@ -608,6 +650,7 @@ def parse_ft_summary_html(html: str) -> dict[str, object]:
         "ter": ongoing_charge,
         "use_of_income": income_treatment,
         "ucits_compliant": ucits_compliant,
+        "benchmark_name": benchmark_name,
         "asset_class_hint": "Equity" if equity_size_hint or equity_style_hint else None,
         "domicile_country": domicile_country or None,
         "fund_size_value": fund_size_value,
@@ -799,6 +842,7 @@ def run_ft_metadata_backfill(
                 stats.holdings_parsed += 1
 
             profile_metadata = {
+                "benchmark_name": summary_parsed.get("benchmark_name"),
                 "asset_class_hint": summary_parsed.get("asset_class_hint"),
                 "domicile_country": summary_parsed.get("domicile_country"),
                 "fund_size_value": summary_parsed.get("fund_size_value"),

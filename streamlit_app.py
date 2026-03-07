@@ -510,12 +510,12 @@ def _strategy_candidate_label(row: dict[str, object]) -> str:
     ticker = _normalized_known_text(row.get("ticker"))
     venue = _normalized_known_text(row.get("primary_venue"))
     fee = _format_percentage(row.get("ongoing_charges"))
-    parts = [part for part in (ticker, venue) if part]
+    left = ticker or str(row.get("ISIN") or "")
     if fee:
-        parts.append(f"TER {fee}")
-    if parts:
-        return " · ".join(parts)
-    return str(row.get("ISIN") or "")
+        left = f"{left} ({fee})"
+    if venue:
+        return f"{left} · {venue}"
+    return left
 
 
 def _strategy_cell(value: str, *, muted: bool = False) -> str:
@@ -551,12 +551,11 @@ def _render_strategy_bucket_table(strategy: dict[str, object]) -> list[dict[str,
         "Target",
         "Funds\navailable",
         "ASSET\nTYPE",
-        "Fund ticker",
+        "FUND TICKER\n(TER)",
         "ISIN",
         "Fund name",
         "Distribution",
         "Currency",
-        "TER",
         "Fund size",
         "Region",
         "Size",
@@ -564,7 +563,7 @@ def _render_strategy_bucket_table(strategy: dict[str, object]) -> list[dict[str,
         "Bond type",
         "Duration",
     ]
-    column_widths = [1.45, 0.72, 1.0, 1.05, 1.8, 1.25, 2.5, 1.08, 0.9, 0.82, 1.0, 0.95, 0.8, 0.8, 1.0, 0.9]
+    column_widths = [1.45, 0.72, 1.0, 1.05, 2.2, 1.25, 2.5, 1.08, 0.9, 1.0, 0.95, 0.8, 0.8, 1.0, 0.9]
     header_cols = st.columns(column_widths, gap="small")
     for col, label in zip(header_cols, header_labels):
         col.markdown(f"<div class='strategy-grid-head'>{_escape(label)}</div>", unsafe_allow_html=True)
@@ -617,7 +616,6 @@ def _render_strategy_bucket_table(strategy: dict[str, object]) -> list[dict[str,
             _display_value(_normalized_known_text(selected_row.get("instrument_name"))) if selected_row else MISSING_DISPLAY,
             _display_value(_format_distribution(selected_row.get("distribution_policy"))) if selected_row else MISSING_DISPLAY,
             _display_value(_normalized_known_text(selected_row.get("currency"))) if selected_row else MISSING_DISPLAY,
-            _display_value(_format_percentage(selected_row.get("ongoing_charges"))) if selected_row else MISSING_DISPLAY,
             _display_value(_format_fund_size(selected_row.get("fund_size_value"), selected_row.get("fund_size_currency"))) if selected_row else MISSING_DISPLAY,
             _region_label(item) if selected_row else MISSING_DISPLAY,
             _equity_size_label(item) if selected_row else MISSING_DISPLAY,
