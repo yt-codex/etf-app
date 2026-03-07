@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 
-TAXONOMY_VERSION = "taxonomy_v2"
+TAXONOMY_VERSION = "taxonomy_v3"
 LEGACY_CLASSIFIER_VERSION = "stage4_classify_v4"
 
 DOMICILE_BY_ISIN_PREFIX = {
@@ -22,12 +22,13 @@ DOMICILE_BY_ISIN_PREFIX = {
     "NL": "Netherlands",
 }
 
-ASIA_COUNTRIES = {"China", "India", "Japan", "South Korea", "Taiwan"}
+ASIA_COUNTRIES = {"Australia", "China", "India", "Japan", "South Korea", "Taiwan"}
 EUROPE_COUNTRIES = {
     "Austria",
     "Bulgaria",
     "Croatia",
     "Czech Republic",
+    "France",
     "Germany",
     "Greece",
     "Hungary",
@@ -46,6 +47,33 @@ SPECIAL_REPLACEMENTS: tuple[tuple[str, str], ...] = (
     (r"\bAM\.CE\.I-AV\.AM\.E\b", "US EQUITY"),
     (r"\bAM\.CE\.I-AV\.EU\.E\b", "EUROPE EQUITY"),
     (r"\bAM\.CE\.I-AV\.PA\.E\b", "PACIFIC EQUITY"),
+    (r"\bEM[\.\s-]+SOV[\.\s-]*BD\b", "EMERGING SOVEREIGN BOND"),
+    (r"\bEM[\.\s-]+LOC[\.\s-]*BD\b", "EMERGING LOCAL BOND"),
+    (r"\bHY[\.\s-]*BD\b", "HIGH YIELD BOND"),
+    (r"\bAG[\.\s-]*BD\b", "AGGREGATE BOND"),
+    (r"\bGO[\.\s-]*BD\b", "GOVT BOND"),
+    (r"\bSOV[\.\s-]*BD\b", "SOVEREIGN BOND"),
+    (r"\bLOC[\.\s-]*BD\b", "LOCAL BOND"),
+    (r"\bCBD\b", "COVERED BOND"),
+    (r"\bU[\.\s-]*TR\b", "US TREASURY"),
+    (r"\bJTEGBI(?=\d|\b)", "JAPAN TREASURY GOVERNMENT BOND INDEX "),
+    (r"\bAPAC\b", "ASIA PACIFIC"),
+    (r"\bPAC[\.\s-]+EX[\.\s-]+JP\b", "PACIFIC EX JAPAN"),
+    (r"\bEM[\.\s-]+SUS\b", "EMERGING SUSTAINABLE"),
+    (r"\bEM[\.\s-]+QUAL\b", "EMERGING QUALITY"),
+    (r"\bEM[\.\s-]+QUALITY\b", "EMERGING QUALITY"),
+    (r"\bEXJAPAN\b", "EX JAPAN"),
+    (r"USEQUITY", "US EQUITY "),
+    (r"\bGLOBL\b", "GLOBAL"),
+    (r"\bEUROPEAN\b", "EUROPE"),
+    (r"\bEUROZ\b", "EUROZONE"),
+    (r"\bDECRB\b", "DECARB"),
+    (r"\bSMLL CAP\b", "SMALL CAP"),
+    (r"\bSEMICONDUCTR\b", "SEMICONDUCTOR"),
+    (r"\bMSCI WO\b", "MSCI WORLD"),
+    (r"\bE[\.\s-]*G[\.\s-]*B\b", "EURO GOVERNMENT BOND"),
+    (r"NASDAQCYBERSECURITY", " NASDAQ CYBER SECURITY "),
+    (r"NYSEARCABIOTECH", " NYSE ARCA BIOTECH "),
     (r"\bGLSMCV\b", "GLOBAL SMALL CAP VALUE"),
     (r"\bGLOBALQUALDIVGROWTH\b", "GLOBAL QUALITY DIVIDEND GROWTH"),
     (r"\bGLOBALEQUITY\b", "GLOBAL EQUITY"),
@@ -53,7 +81,15 @@ SPECIAL_REPLACEMENTS: tuple[tuple[str, str], ...] = (
     (r"\bGLB\b", "GLOBAL"),
     (r"\bGL[\.\s]EQ\b", "GLOBAL EQUITY"),
     (r"\bEM[\.\s]EQ\b", "EMERGING MARKETS EQUITY"),
+    (r"\bMSCI AUST\b", "MSCI AUSTRALIA"),
     (r"\bMSCI IND\b", "MSCI INDIA"),
+    (r"\bMSCI EUR\b", "MSCI EUROPE"),
+    (r"\bMSCI JP\b", "MSCI JAPAN"),
+    (r"\bMSCIEMU\b", "MSCI EMU"),
+    (r"\bMSCIUSAESGSEL\b", "MSCI USA ESG SELECT"),
+    (r"\bMSCIWEWS\b", "MSCI WORLD ESG SCREENED"),
+    (r"\bMSCI W\.?2\b", "MSCI WORLD"),
+    (r"\bCIRECLDRS\b", "CIRCULAR LEADERS"),
     (r"\bFAEXJP\b", "FAR EAST EX JAPAN"),
     (r"\bMULTIFACTOR\b", "MULTI FACTOR"),
     (r"\bGEM\b", "EMERGING"),
@@ -79,8 +115,12 @@ SPECIAL_REPLACEMENTS: tuple[tuple[str, str], ...] = (
     (r"\bEUROSTOXX([0-9]+)\b", r"EURO STOXX \1"),
     (r"\bEOSTXX([0-9]+)\b", r"EURO STOXX \1"),
     (r"\bEOSTXX\b", "EURO STOXX"),
+    (r"\bFTSE EPRAEORE\b", "FTSE EPRA EUROPE REAL ESTATE"),
     (r"\bESTX\b", "EURO STOXX"),
+    (r"\bESTRAUTO\b", "EUROPEAN STRATEGIC AUTONOMY"),
     (r"\bSTOX\b", "STOXX"),
+    (r"\bST600 INSU\b", "STOXX EUROPE 600 INSURANCE"),
+    (r"\bST600 RESOU\b", "STOXX EUROPE 600 RESOURCES"),
     (r"\bDIVDAX2\b", "DIVDAX"),
     (r"\bDJ\b", "DOW JONES"),
     (r"\bEO\b", "EURO"),
@@ -108,31 +148,31 @@ PATTERNS = {
     "bond_type_aggregate": [r"\bAGG(?:REGATE)?\b", r"\bTOTAL BOND\b", r"\bAGG BOND\b", r"\bMBS\b", r"\bMORTGAGE BACKED\b"],
     "bond_type_corp": [r"\bCORP(?:ORATE)?\b", r"\bCREDIT\b", r"\bHIGH YIELD\b", r"\bINVESTMENT GRADE\b", r"\bCORP BOND\b", r"\bFLOAT(?:ING)? RATE\b", r"\bFRN\b"],
     "equity_hint": [r"\bMSCI\b", r"\bFTSE\b", r"\bSTOXX\b", r"\bEURO STOXX", r"\bS P\b", r"\bNASDAQ\b", r"\bRUSSELL\b", r"\bNIKKEI\b", r"\bTOPIX\b", r"\bDAX\b", r"\bDAX[0-9A-Z]*\b", r"\bMDAX\b", r"\bSDAX\b", r"\bTECDAX\b", r"\bDIVDAX\b", r"\bATX\b", r"\bSLI\b", r"\bSMI\b", r"\bSOFIX\b", r"\bCROBEX\b", r"\bPX\b", r"\bASE\b", r"\bBUX\b", r"\bMBI10\b", r"\bWIG20\b", r"\bSAX\b", r"\bSBI\b", r"\bBELEX\b", r"\bMIB\b", r"\bEMU\b", r"\bBRAZIL\b", r"\bSPAIN\b", r"\bUK\b", r"\bEU S 50\b", r"\bDOW JONES\b", r"\bDJIA\b", r"\bEQUITY\b", r"\bEQ\b", r"\bSHARES?\b", r"\bSTOCK\b", r"\bWORLD\b", r"\bGLOBAL\b", r"\bEMERGING\b", r"\bSMALL CAP\b", r"\bMID CAP\b", r"\bLARGE CAP\b", r"\bVALUE\b", r"\bGROWTH\b", r"\bQUALITY\b", r"\bMOMENTUM\b", r"\bDIVIDEND\b", r"\bEPI\b"],
-    "region_global": [r"\bWORLD\b", r"\bGLOBAL\b", r"\bWORLDWIDE\b", r"\bACWI\b", r"\bALL COUNTRY\b", r"\bALL WORLD\b", r"\bFAR EAST EX JAPAN\b"],
+    "region_global": [r"\bWORLD\b", r"\bGLOBAL\b", r"\bWORLDWIDE\b", r"\bACWI\b", r"\bALL COUNTRY\b", r"\bALL WORLD\b"],
     "region_north_america": [r"\bNORTH AMERICA\b"],
     "region_em": [r"\bEMERGING\b", r"\bEMERGING MARKETS?\b", r"\bLATIN AMERICA\b", r"\bEM IMI\b", r"\bEM MARKETS?\b", r"\bMSCI EM\b", r"\bEM EQ\b", r"\bEMBI\b"],
     "region_europe": [r"\bEUROPE\b", r"\bEU\b", r"\bEURO STOXX", r"\bEUROZONE\b", r"\bSTOXX EUROPE\b", r"\bEURO ST\b", r"\bEU 600\b", r"\bS E 600\b", r"\bEU S 50\b", r"\bEMU\b", r"\bMIB\b", r"\bEURO PRIME\b", r"\bSPAIN\b", r"\bUK\b", r"\bEUR LARGE 200\b", r"\bEUR SMALL 200\b"],
-    "region_asia": [r"\bASIA\b", r"\bPACIFIC\b", r"\bASIA PACIFIC\b"],
+    "region_asia": [r"\bASIA\b", r"\bPACIFIC\b", r"\bASIA PACIFIC\b", r"\bAPAC\b", r"\bFAR EAST EX JAPAN\b", r"\bASIA PACIFIC EX JAPAN\b"],
     "sector_technology": [r"\bTECH(?:NOLOGY)?\b", r"\bTECDAX\b", r"\bSEMICONDUCTOR\b"],
-    "sector_health_care": [r"\bHEALTH(?: CARE|CARE)?\b", r"\bBIOTECH\b"],
-    "sector_financials": [r"\bFINANCIAL(?:S)?\b", r"\bBANK(?:S)?\b"],
-    "sector_energy": [r"\bENERGY\b"],
+    "sector_health_care": [r"\bHEALTH(?: CARE|CARE)?\b", r"\bBIOTECH\b", r"\bPHARMA\b"],
+    "sector_financials": [r"\bFINANCIAL(?:S)?\b", r"\bBANK(?:S)?\b", r"\bINSUR(?:ANCE|ER|ERS)\b"],
+    "sector_energy": [r"\bENERGY\b", r"\bENGY\b"],
     "sector_utilities": [r"\bUTILIT(?:Y|IES)\b"],
     "sector_industrials": [r"\bINDUSTRIAL(?:S)?\b"],
-    "sector_real_estate": [r"\bREAL ESTATE\b", r"\bPROPERTY\b"],
-    "sector_materials": [r"\bMATERIALS\b", r"\bCHEM(?:ICALS?)?\b"],
+    "sector_real_estate": [r"\bREAL ESTATE\b", r"\bPROPERTY\b", r"\bREIT(?:S)?\b", r"\bNAREIT\b", r"\bEPRA\b"],
+    "sector_materials": [r"\bMATERIALS\b", r"\bCHEM(?:ICALS?)?\b", r"\bRESOURCE(?:S)?\b"],
     "sector_communication": [r"\bCOMMUNICATION\b", r"\bTELECOM\b", r"\bMEDIA\b"],
     "theme_robotics": [r"\bROBOTICS\b"],
     "theme_ai": [r"\bAI\b", r"\bARTIFICIAL INTELLIGENCE\b"],
     "theme_water": [r"\bWATER\b"],
     "theme_hydrogen": [r"\bHYDROGEN\b"],
     "theme_blockchain": [r"\bBLOCKCHAIN\b", r"\bCRYPTO\b"],
-    "theme_digital": [r"\bDIGITAL(?:ISATION|IZATION)?\b", r"\bDIG ENT\b", r"\bDIGITAL PAYMENTS\b", r"\bENTERTAINMENT\b", r"\bEDUCATION\b"],
+    "theme_digital": [r"\bDIGITAL(?:ISATION|IZATION)?\b", r"\bDIG ENT\b", r"\bDIGITAL PAYMENTS\b", r"\bENTERTAINMENT\b", r"\bEDUCATION\b", r"\bCYBER ?SEC(?:URITY)?\b", r"\bCLOUD\b", r"\bECOM(?:MERCE)?\b", r"\bINTERNET\b", r"\bNEXTG\b", r"\bMETAVERSE\b"],
     "theme_circular_economy": [r"\bCIRCULAR ECONOMY\b"],
-    "theme_rare_earths": [r"\bRARE EARTH\b"],
+    "theme_rare_earths": [r"\bRARE EARTH\b", r"\bSCARCE RESOURCES\b", r"\bECON(?:OMY)? METALS\b"],
     "theme_bionics": [r"\bBIONIC\b"],
-    "theme_megatrends": [r"\bMEGATRENDS?\b"],
-    "theme_green_deal": [r"\bGREEN DEAL\b"],
+    "theme_megatrends": [r"\bMEGATRENDS?\b", r"\bSPACE\b", r"\bTRAVEL\b", r"\bFUTURE FOOD\b", r"\bFUTURE OF FOOD\b"],
+    "theme_green_deal": [r"\bGREEN DEAL\b", r"\bBATTERY\b", r"\bEV CHARGING\b", r"\bSMART GRID\b", r"\bDECARB\b", r"\bENABLERS?\b", r"\bCLEAN EDGE\b"],
     "theme_brands": [r"\bBRANDS\b"],
     "theme_esg": [r"\bESG\b", r"\bSUSTAIN(?:ABLE|ABILITY)?\b", r"\bPARIS ALIGNED\b", r"\bSCR(?:EENED)?\b", r"\bSRI\b", r"\bPAB\b", r"\bCTB\b", r"\bCLIMATE\b", r"\bRESPONSIBLE\b", r"\bLOW CARBON\b"],
     "factor_quality": [r"\bQUALITY\b"],
@@ -145,15 +185,18 @@ PATTERNS = {
     "size_large": [r"\bLARGE CAP\b", r"\bDAX\b", r"\bS P 500\b", r"\bEURO STOXX 50\b", r"\bTOP 20\b", r"\bEUR LARGE 200\b"],
     "style_value": [r"\bVALUE\b", r"\bVAL\b"],
     "style_growth": [r"\bGROWTH\b"],
-    "duration_short": [r"\b0[\s/-]?1\b", r"\b1[\s/-]?3\b", r"\b0[\s/-]?6M\b", r"\b3[\s/-]?6M\b", r"\bSHORT\b", r"\bULTRA SHORT\b", r"\bT[\s-]?BILL\b", r"\bFLOAT(?:ING)? RATE\b", r"\bFLOT RATE\b", r"\bFRN\b"],
+    "duration_short": [r"\b0[\s/-]?1\b", r"\b1[\s/-]?3\b", r"\b0[\s/-]?6M(?:TH)?\b", r"\b3[\s/-]?6M(?:TH)?\b", r"\b0[\s/-]?3M(?:TH)?\b", r"\bSHORT\b", r"\bULTRA SHORT\b", r"\bT[\s-]?BILL\b", r"\bFLOAT(?:ING)? RATE\b", r"\bFLOT RATE\b", r"\bFRN\b"],
     "duration_intermediate": [r"\b3[\s/-]?7\b", r"\b5[\s/-]?10\b", r"\b7[\s/-]?10\b", r"\bINTERMEDIATE\b"],
     "duration_long": [r"\b10\+\b", r"\b15\+\b", r"\b20\+\b", r"\b30\+\b", r"\bLONG\b", r"\bLONG DATED\b"],
 }
 
 COUNTRY_RULES = (
-    ("United States", "us", [r"\bUSA\b", r"\bUS\b", r"\bS P 500\b", r"\bSP 500\b", r"\bS AND P 500\b", r"\bNASDAQ\b", r"\bRUSSELL\b", r"\bDOW JONES\b", r"\bDJIA\b"]),
+    ("United States", "us", [r"\bUSA\b", r"\bUS\b", r"\bU S\b", r"\bUNITED STATES\b", r"\bS P 500\b", r"\bSP 500\b", r"\bS P 600\b", r"\bS P SMALLCAP 600\b", r"\bS AND P 500\b", r"\bS AND P 600\b", r"\bSMALLCAP 600\b", r"\bSMALL CAP 600\b", r"\bNASDAQ\b", r"\bRUSSELL\b", r"\bDOW JONES\b", r"\bDJIA\b"]),
+    ("Canada", "north_america", [r"\bCANADA\b"]),
+    ("Mexico", "em", [r"\bMEXICO\b"]),
     ("Germany", "europe", [r"\bDAX\b", r"\bDAX[0-9A-Z]*\b", r"\bMDAX\b", r"\bSDAX\b", r"\bTECDAX\b", r"\bDIVDAX\b", r"\bPFANDBRIEFE\b", r"\bREXX\b"]),
     ("Austria", "europe", [r"\bATX\b"]),
+    ("France", "europe", [r"\bFRANCE\b"]),
     ("Switzerland", "europe", [r"\bSLI\b", r"\bSMI\b", r"\bSWITZERLAND\b", r"\bSWISS\b"]),
     ("Luxembourg", "europe", [r"\bLUX(?:EMBOURG)?\b"]),
     ("Netherlands", "europe", [r"\bAEX\b"]),
@@ -169,14 +212,19 @@ COUNTRY_RULES = (
     ("Slovenia", "europe", [r"\bSLOV\.\b", r"\bSBI TOP\b", r"\bSLOVENIA\b"]),
     ("Serbia", "europe", [r"\bSERB(?:IA)?\b", r"\bBELEX\b"]),
     ("Spain", "europe", [r"\bSPAIN\b", r"\bIBEX\b"]),
-    ("United Kingdom", "europe", [r"\bUK\b", r"\bFTSE 100\b", r"\bFTSE 250\b"]),
+    ("United Kingdom", "europe", [r"\bUK\b", r"\bU K\b", r"\bUNITED KINGDOM\b", r"\bFTSE 100\b", r"\bFTSE 250\b"]),
     ("Brazil", "em", [r"\bBRAZIL\b"]),
+    ("Australia", "asia", [r"\bAUSTRALIA\b", r"\bAUST\b"]),
     ("Japan", "asia", [r"\bJAPAN\b", r"\bNIKKEI\b", r"\bTOPIX\b"]),
     ("South Africa", "em", [r"\bSOUTH AFRICA\b", r"\bMSCI SA\b"]),
     ("China", "asia", [r"\bCHINA\b", r"\bCSI\b", r"\bHANG SENG\b"]),
     ("India", "asia", [r"\bINDIA\b"]),
+    ("Indonesia", "em", [r"\bINDONESIA\b"]),
+    ("Saudi Arabia", "em", [r"\bSAUDI(?: ARABIA)?\b"]),
     ("South Korea", "asia", [r"\bKOREA\b", r"\bKOSPI\b"]),
+    ("Kuwait", "em", [r"\bKUWAIT\b"]),
     ("Taiwan", "asia", [r"\bTAIWAN\b"]),
+    ("Turkey", "em", [r"\bTURKEY\b"]),
 )
 
 HEDGED_TARGETS = (
@@ -273,7 +321,7 @@ def _parse_duration_bounds(source_text: str) -> tuple[Optional[float], Optional[
         return float(value.replace(",", "."))
 
     month_range_match = re.search(
-        r"\b(0|1|3|6|9|12)\s*[-/]\s*(1|3|6|9|12)\s*M(?:ONTHS?)?\b",
+        r"\b(0|1|3|6|9|12)\s*[-/]\s*(1|3|6|9|12)\s*M(?:ONTHS?|THS?)?\b",
         source_text,
     )
     if month_range_match:
@@ -282,7 +330,7 @@ def _parse_duration_bounds(source_text: str) -> tuple[Optional[float], Optional[
         if low <= high:
             return low, high
     range_match = re.search(
-        r"\b(\d+(?:\.\d+)?)\s*[-/]\s*(\d+(?:\.\d+)?)\s*(?:Y(?:EARS?)?|YR|Y)?\b",
+        r"(?<!\d)(\d+(?:\.\d+)?)\s*[-/]\s*(\d+(?:\.\d+)?)\s*(?:Y(?:EARS?)?|YR|Y)?\b",
         source_text,
     )
     if range_match:
@@ -290,7 +338,7 @@ def _parse_duration_bounds(source_text: str) -> tuple[Optional[float], Optional[
         high = _as_float(range_match.group(2))
         if low <= high:
             return low, high
-    plus_match = re.search(r"\b(\d+(?:\.\d+)?)\s*\+\s*(?:Y(?:EARS?)?|YR|Y)?\b", source_text)
+    plus_match = re.search(r"(?<!\d)(\d+(?:\.\d+)?)\s*\+\s*(?:Y(?:EARS?)?|YR|Y)?\b", source_text)
     if plus_match:
         return _as_float(plus_match.group(1)), None
 

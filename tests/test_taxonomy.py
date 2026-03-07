@@ -78,6 +78,19 @@ def test_classifies_sp500_as_us_equity() -> None:
     assert result.geography_region == "us"
 
 
+def test_classifies_us_with_punctuated_abbreviation() -> None:
+    result = classify_instrument(
+        isin="IE00BF2B0P08",
+        instrument_name="FRK U.S. EQUITY UCITS ETF",
+        instrument_type="ETF",
+        distribution_policy="Accumulating",
+    )
+
+    assert result.asset_class == "equity"
+    assert result.geography_country == "United States"
+    assert result.geography_region == "us"
+
+
 def test_classifies_avantis_global_equity_abbreviation() -> None:
     result = classify_instrument(
         isin="IE000RJECXS5",
@@ -127,6 +140,46 @@ def test_classifies_short_treasury_bond_as_bond_and_cash_proxy() -> None:
     assert result.bond_type == "govt"
     assert result.duration_bucket == "short"
     assert result.cash_proxy_flag == 1
+
+
+def test_classifies_zero_to_three_month_treasury_as_short() -> None:
+    result = classify_instrument(
+        isin="IE00BMD8KM66",
+        instrument_name="JPM US TREASURY BOND 0-3MTH UCITS ETF",
+        instrument_type="ETF",
+        distribution_policy="Distributing",
+    )
+
+    assert result.asset_class == "bond"
+    assert result.bond_type == "govt"
+    assert result.duration_bucket == "short"
+    assert result.duration_years_low == 0.0
+    assert result.duration_years_high == 0.25
+
+
+def test_classifies_abbreviated_high_yield_bd_as_bond() -> None:
+    result = classify_instrument(
+        isin="IE000IEOQSJ3",
+        instrument_name="JPM-EUR HY BD UE EOA",
+        instrument_type="ETF",
+        distribution_policy="Distributing",
+    )
+
+    assert result.asset_class == "bond"
+    assert result.bond_type == "corp"
+
+
+def test_classifies_jtegbi_ten_plus_as_long_govt_bond() -> None:
+    result = classify_instrument(
+        isin="LU2742533636",
+        instrument_name="BPPE-JTEGBI10+ U.ETFEOA",
+        instrument_type="ETF",
+        distribution_policy="Accumulating",
+    )
+
+    assert result.asset_class == "bond"
+    assert result.bond_type == "govt"
+    assert result.duration_bucket == "long"
 
 
 def test_classifies_physical_gold_etc_as_gold_commodity() -> None:
@@ -245,6 +298,57 @@ def test_classifies_europe_large_cap_abbreviation() -> None:
     assert result.equity_size == "large"
 
 
+def test_classifies_apac_ex_japan_as_asia() -> None:
+    result = classify_instrument(
+        isin="IE000P1WR081",
+        instrument_name="HSBC APAC EX JP SUS EQ UC ETF USD (DIST)",
+        instrument_type="ETF",
+        distribution_policy="Distributing",
+    )
+
+    assert result.asset_class == "equity"
+    assert result.geography_region == "asia"
+
+
+def test_classifies_pac_ex_jp_as_asia() -> None:
+    result = classify_instrument(
+        isin="IE000SGVQIZ9",
+        instrument_name="HSBC MSCI PAC EX JP UCITS ETF USD (ACC)",
+        instrument_type="ETF",
+        distribution_policy="Accumulating",
+    )
+
+    assert result.asset_class == "equity"
+    assert result.geography_region == "asia"
+
+
+def test_classifies_epra_real_estate_as_sector_equity() -> None:
+    result = classify_instrument(
+        isin="IE00B5L01S80",
+        instrument_name="HSBC FTSE EPRA/NAREIT DEV. UCITS ETF $",
+        instrument_type="ETF",
+        distribution_policy="Distributing",
+    )
+
+    assert result.asset_class == "equity"
+    assert result.sector == "real_estate"
+    assert result.geography_scope == "sector"
+    assert result.geography_region == "global"
+
+
+def test_classifies_us_equity_compound_name_as_us() -> None:
+    result = classify_instrument(
+        isin="IE00BYTH6238",
+        instrument_name="FIRSTTRUST USEQUITYOPPORTUNITIESUCITS A",
+        instrument_type="ETF",
+        distribution_policy="Accumulating",
+    )
+
+    assert result.asset_class == "equity"
+    assert result.geography_country == "United States"
+    assert result.geography_region == "us"
+
+
 def test_classifies_hydrogen_theme_as_global_thematic_equity() -> None:
     result = classify_instrument(
         isin="IE00BMDH1538",
@@ -270,6 +374,88 @@ def test_worldwide_multi_factor_equity_is_global() -> None:
     assert result.asset_class == "equity"
     assert result.geography_region == "global"
     assert result.factor == "multi_factor"
+
+
+def test_classifies_nasdaq_cybersecurity_as_us_digital() -> None:
+    result = classify_instrument(
+        isin="IE00BF16M727",
+        instrument_name="FIRSTTRUSTNASDAQCYBERSECURITYUCITS",
+        instrument_type="ETF",
+        distribution_policy="Accumulating",
+    )
+
+    assert result.asset_class == "equity"
+    assert result.geography_country == "United States"
+    assert result.theme == "digital"
+
+
+def test_classifies_sp_smallcap_600_as_us_small_cap() -> None:
+    result = classify_instrument(
+        isin="IE00B2QWCY14",
+        instrument_name="ISHRS S&P SMLL CAP 600 ETF USD (DIST)",
+        instrument_type="ETF",
+        distribution_policy="Distributing",
+    )
+
+    assert result.asset_class == "equity"
+    assert result.geography_country == "United States"
+    assert result.equity_size == "small"
+
+
+def test_classifies_compressed_stoxx_600_insurance_as_europe_financials() -> None:
+    result = classify_instrument(
+        isin="LU1834987973",
+        instrument_name="MUL-AMUN ST600 INSU ETF A",
+        instrument_type="ETF",
+        distribution_policy="Accumulating",
+    )
+
+    assert result.asset_class == "equity"
+    assert result.geography_region == "europe"
+    assert result.sector == "financials"
+
+
+def test_classifies_e_g_b_abbreviation_as_govt_bond() -> None:
+    result = classify_instrument(
+        isin="LU3138596492",
+        instrument_name="OSS E.G.B.7-10Y U.ETF 1CE",
+        instrument_type="ETF",
+        distribution_policy="Accumulating",
+    )
+
+    assert result.asset_class == "bond"
+    assert result.bond_type == "govt"
+    assert result.duration_bucket == "intermediate"
+
+
+def test_classifies_canada_from_benchmark_metadata() -> None:
+    result = classify_instrument(
+        isin="IE00B52SF786",
+        instrument_name="ISHRS MSCI CANADA UCITS ETF USD (ACC)",
+        instrument_type="ETF",
+        distribution_policy="Accumulating",
+        benchmark_name="MSCI Developed - Canada in USD - NET TR",
+        asset_class_hint="Equity",
+    )
+
+    assert result.asset_class == "equity"
+    assert result.geography_country == "Canada"
+    assert result.geography_region == "north_america"
+
+
+def test_classifies_turkey_from_benchmark_metadata() -> None:
+    result = classify_instrument(
+        isin="IE00B1FZS574",
+        instrument_name="ISHARES MSCI TURKEY UCITS ETF USD (DIST)",
+        instrument_type="ETF",
+        distribution_policy="Distributing",
+        benchmark_name="MSCI Turkey - Net Returns",
+        asset_class_hint="Equity",
+    )
+
+    assert result.asset_class == "equity"
+    assert result.geography_country == "Turkey"
+    assert result.geography_region == "em"
 
 
 def test_classifies_emerging_market_bond_from_benchmark_metadata() -> None:
