@@ -19,6 +19,10 @@ dependencies = [
 dev = [
   "pytest>=8.3",
 ]
+ui = [
+  "pandas>=2.2",
+  "streamlit>=1.42",
+]
 
 [project.scripts]
 etf-pipeline = "etf_app.cli:main"

@@ -90,7 +90,7 @@ SELECT
 """
 
 
-def _open_conn(db_path: str) -> sqlite3.Connection:
+def open_read_conn(db_path: str) -> sqlite3.Connection:
     conn = sqlite3.connect(str(Path(db_path)))
     conn.row_factory = sqlite3.Row
     ensure_product_profile_schema(conn)
@@ -100,7 +100,7 @@ def _open_conn(db_path: str) -> sqlite3.Connection:
 
 
 def refresh_read_models(db_path: str) -> dict[str, int]:
-    conn = _open_conn(db_path)
+    conn = open_read_conn(db_path)
     try:
         conn.execute("BEGIN")
         profile_stats = refresh_product_profile(conn)
@@ -552,7 +552,7 @@ def create_app(db_path: str) -> Callable[..., list[bytes]]:
 
         params = _parse_query_string(str(environ.get("QUERY_STRING") or ""))
         try:
-            conn = _open_conn(db_path)
+            conn = open_read_conn(db_path)
             try:
                 if path in {"/", "/api"}:
                     return _json_response(

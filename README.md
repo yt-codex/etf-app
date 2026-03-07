@@ -19,6 +19,12 @@ Install the package in editable mode for local development:
 python -m pip install -e .[dev]
 ```
 
+Install the Streamlit UI dependencies:
+
+```powershell
+python -m pip install -e .[ui]
+```
+
 Rebuild derived data without fetching new listings:
 
 ```powershell
@@ -49,6 +55,13 @@ Serve the thin JSON API for browse/filter/recommend UI work:
 etf-pipeline serve-api --db-path stage1_etf.db --host 127.0.0.1 --port 8000
 ```
 
+Run the Streamlit UI:
+
+```powershell
+$env:ETF_APP_DB_PATH='stage1_etf.db'
+streamlit run streamlit_app.py
+```
+
 Legacy command names (`patch-data`, `stage1-refresh`, `classify-taxonomy`, `recommend-strategies`) still work.
 
 ## API
@@ -63,6 +76,12 @@ Available endpoints:
 - `/api/filters`
 - `/api/strategies`
 - `/api/completeness`
+
+## Streamlit UI
+
+The UI lives in `streamlit_app.py` and reads directly from the normalized SQLite data model via the same query helpers that back the API.
+
+For Streamlit hosting, the repo now includes `requirements.txt`, which installs the package with the `ui` extra.
 
 ## Repo layout
 

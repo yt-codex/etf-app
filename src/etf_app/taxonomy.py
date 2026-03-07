@@ -47,10 +47,15 @@ SPECIAL_REPLACEMENTS: tuple[tuple[str, str], ...] = (
     (r"\bAM\.CE\.I-AV\.EU\.E\b", "EUROPE EQUITY"),
     (r"\bAM\.CE\.I-AV\.PA\.E\b", "PACIFIC EQUITY"),
     (r"\bGLSMCV\b", "GLOBAL SMALL CAP VALUE"),
+    (r"\bGLOBALQUALDIVGROWTH\b", "GLOBAL QUALITY DIVIDEND GROWTH"),
+    (r"\bGLOBALEQUITY\b", "GLOBAL EQUITY"),
     (r"\bGLBL\b", "GLOBAL"),
     (r"\bGLB\b", "GLOBAL"),
     (r"\bGL[\.\s]EQ\b", "GLOBAL EQUITY"),
     (r"\bEM[\.\s]EQ\b", "EMERGING MARKETS EQUITY"),
+    (r"\bMSCI IND\b", "MSCI INDIA"),
+    (r"\bFAEXJP\b", "FAR EAST EX JAPAN"),
+    (r"\bMULTIFACTOR\b", "MULTI FACTOR"),
     (r"\bGEM\b", "EMERGING"),
     (r"\bWRLD\b", "WORLD"),
     (r"\bWLD\b", "WORLD"),
@@ -96,17 +101,17 @@ PATTERNS = {
     "commodity_industrial_metals": [r"\bCOPPER\b", r"\bALUMIN(?:IUM|UM)\b", r"\bNICKEL\b", r"\bZINC\b"],
     "commodity_precious_metals": [r"\bPLATINUM\b", r"\bPALLADIUM\b"],
     "commodity_broad": [r"\bCOMMOD(?:ITY|ITIES)?\b", r"\bCMCI\b"],
-    "bond_core": [r"\bBOND(?:S)?\b", r"\bTREAS(?:URY)?\b", r"\bGOV(?:ERNMENT)?\b", r"\bGOVT\b", r"\bGILT(?:S)?\b", r"\bCORP(?:ORATE)?\b", r"\bCREDIT\b", r"\bSOVEREIGN\b", r"\bAGG(?:REGATE)?\b", r"\bLINK(?:ED|ERS?)?\b", r"\bTIPS\b", r"\bREXX\b", r"\bPFANDBRIEFE\b", r"\bCOVERED\b", r"\bFLOAT(?:ING)? RATE\b", r"\bFLOT RATE\b"],
+    "bond_core": [r"\bBOND(?:S)?\b", r"\bTREAS(?:URY)?\b", r"\bGOV(?:ERNMENT)?\b", r"\bGOVT\b", r"\bGILT(?:S)?\b", r"\bCORP(?:ORATE)?\b", r"\bCREDIT\b", r"\bSOVEREIGN\b", r"\bAGG(?:REGATE)?\b", r"\bLINK(?:ED|ERS?)?\b", r"\bTIPS\b", r"\bREXX\b", r"\bPFANDBRIEFE\b", r"\bCOVERED BOND(?:S)?\b", r"\bFLOAT(?:ING)? RATE\b", r"\bFLOT RATE\b"],
     "bond_special": [r"I\.EB\.R\.", r"\bT[\s-]?BOND\b", r"\bT[\s-]?BND\b", r"\bTR BOND\b", r"\bTR BND\b"],
     "bond_type_linkers": [r"\bINFLATION\b", r"\bLINK(?:ED|ERS?)?\b", r"\bTIPS\b"],
     "bond_type_govt": [r"\bTREAS(?:URY)?\b", r"\bTRSY\b", r"\bTSY\b", r"\bGOV(?:ERNMENT)?\b", r"\bGOVT\b", r"\bGILT(?:S)?\b", r"\bSOVEREIGN\b", r"\bEMBI\b", r"\bUST\b", r"\bJGB\b", r"\bBUND\b", r"\bOAT\b", r"\bBTP\b", r"\bTREASURY BILL\b", r"\bT[\s-]?BILL\b", r"\bPFANDBRIEFE\b", r"\bREXX\b", r"I\.EB\.R\.", r"\bTR BOND\b", r"\bTR BND\b"],
-    "bond_type_aggregate": [r"\bAGG(?:REGATE)?\b", r"\bTOTAL BOND\b", r"\bAGG BOND\b"],
+    "bond_type_aggregate": [r"\bAGG(?:REGATE)?\b", r"\bTOTAL BOND\b", r"\bAGG BOND\b", r"\bMBS\b", r"\bMORTGAGE BACKED\b"],
     "bond_type_corp": [r"\bCORP(?:ORATE)?\b", r"\bCREDIT\b", r"\bHIGH YIELD\b", r"\bINVESTMENT GRADE\b", r"\bCORP BOND\b", r"\bFLOAT(?:ING)? RATE\b", r"\bFRN\b"],
     "equity_hint": [r"\bMSCI\b", r"\bFTSE\b", r"\bSTOXX\b", r"\bEURO STOXX", r"\bS P\b", r"\bNASDAQ\b", r"\bRUSSELL\b", r"\bNIKKEI\b", r"\bTOPIX\b", r"\bDAX\b", r"\bDAX[0-9A-Z]*\b", r"\bMDAX\b", r"\bSDAX\b", r"\bTECDAX\b", r"\bDIVDAX\b", r"\bATX\b", r"\bSLI\b", r"\bSMI\b", r"\bSOFIX\b", r"\bCROBEX\b", r"\bPX\b", r"\bASE\b", r"\bBUX\b", r"\bMBI10\b", r"\bWIG20\b", r"\bSAX\b", r"\bSBI\b", r"\bBELEX\b", r"\bMIB\b", r"\bEMU\b", r"\bBRAZIL\b", r"\bSPAIN\b", r"\bUK\b", r"\bEU S 50\b", r"\bDOW JONES\b", r"\bDJIA\b", r"\bEQUITY\b", r"\bEQ\b", r"\bSHARES?\b", r"\bSTOCK\b", r"\bWORLD\b", r"\bGLOBAL\b", r"\bEMERGING\b", r"\bSMALL CAP\b", r"\bMID CAP\b", r"\bLARGE CAP\b", r"\bVALUE\b", r"\bGROWTH\b", r"\bQUALITY\b", r"\bMOMENTUM\b", r"\bDIVIDEND\b", r"\bEPI\b"],
-    "region_global": [r"\bWORLD\b", r"\bGLOBAL\b", r"\bACWI\b", r"\bALL COUNTRY\b", r"\bALL WORLD\b"],
+    "region_global": [r"\bWORLD\b", r"\bGLOBAL\b", r"\bWORLDWIDE\b", r"\bACWI\b", r"\bALL COUNTRY\b", r"\bALL WORLD\b", r"\bFAR EAST EX JAPAN\b"],
     "region_north_america": [r"\bNORTH AMERICA\b"],
     "region_em": [r"\bEMERGING\b", r"\bEMERGING MARKETS?\b", r"\bLATIN AMERICA\b", r"\bEM IMI\b", r"\bEM MARKETS?\b", r"\bMSCI EM\b", r"\bEM EQ\b", r"\bEMBI\b"],
-    "region_europe": [r"\bEUROPE\b", r"\bEU\b", r"\bEURO STOXX", r"\bEUROZONE\b", r"\bSTOXX EUROPE\b", r"\bEURO ST\b", r"\bEU 600\b", r"\bS E 600\b", r"\bEU S 50\b", r"\bEMU\b", r"\bMIB\b", r"\bEURO PRIME\b", r"\bSPAIN\b", r"\bUK\b"],
+    "region_europe": [r"\bEUROPE\b", r"\bEU\b", r"\bEURO STOXX", r"\bEUROZONE\b", r"\bSTOXX EUROPE\b", r"\bEURO ST\b", r"\bEU 600\b", r"\bS E 600\b", r"\bEU S 50\b", r"\bEMU\b", r"\bMIB\b", r"\bEURO PRIME\b", r"\bSPAIN\b", r"\bUK\b", r"\bEUR LARGE 200\b", r"\bEUR SMALL 200\b"],
     "region_asia": [r"\bASIA\b", r"\bPACIFIC\b", r"\bASIA PACIFIC\b"],
     "sector_technology": [r"\bTECH(?:NOLOGY)?\b", r"\bTECDAX\b", r"\bSEMICONDUCTOR\b"],
     "sector_health_care": [r"\bHEALTH(?: CARE|CARE)?\b", r"\bBIOTECH\b"],
@@ -119,14 +124,25 @@ PATTERNS = {
     "sector_communication": [r"\bCOMMUNICATION\b", r"\bTELECOM\b", r"\bMEDIA\b"],
     "theme_robotics": [r"\bROBOTICS\b"],
     "theme_ai": [r"\bAI\b", r"\bARTIFICIAL INTELLIGENCE\b"],
+    "theme_water": [r"\bWATER\b"],
+    "theme_hydrogen": [r"\bHYDROGEN\b"],
+    "theme_blockchain": [r"\bBLOCKCHAIN\b", r"\bCRYPTO\b"],
+    "theme_digital": [r"\bDIGITAL(?:ISATION|IZATION)?\b", r"\bDIG ENT\b", r"\bDIGITAL PAYMENTS\b", r"\bENTERTAINMENT\b", r"\bEDUCATION\b"],
+    "theme_circular_economy": [r"\bCIRCULAR ECONOMY\b"],
+    "theme_rare_earths": [r"\bRARE EARTH\b"],
+    "theme_bionics": [r"\bBIONIC\b"],
+    "theme_megatrends": [r"\bMEGATRENDS?\b"],
+    "theme_green_deal": [r"\bGREEN DEAL\b"],
+    "theme_brands": [r"\bBRANDS\b"],
     "theme_esg": [r"\bESG\b", r"\bSUSTAIN(?:ABLE|ABILITY)?\b", r"\bPARIS ALIGNED\b", r"\bSCR(?:EENED)?\b", r"\bSRI\b", r"\bPAB\b", r"\bCTB\b", r"\bCLIMATE\b", r"\bRESPONSIBLE\b", r"\bLOW CARBON\b"],
     "factor_quality": [r"\bQUALITY\b"],
     "factor_momentum": [r"\bMOMENTUM\b"],
-    "factor_dividend": [r"\bDIVIDEND\b", r"\bINCOME\b", r"\bEPI\b", r"\bSELECT DIV\b"],
+    "factor_dividend": [r"\bDIVIDEND\b", r"\bINCOME\b", r"\bEPI\b", r"\bSELECT DIV\b", r"\bSUPERDIVIDEND\b", r"\bCOVERED CALL\b", r"\bPREMIUM INCOME\b", r"\bEQUITY INCOME\b"],
+    "factor_multi_factor": [r"\bMULTI FACTOR\b"],
     "factor_min_vol": [r"\bMIN(?:IMUM)? VOL(?:ATILITY)?\b", r"\bLOW VOL(?:ATILITY)?\b"],
-    "size_small": [r"\bSMALL CAP\b", r"\bSMALL\b", r"\bSDAX\b", r"\bSMALL 200\b"],
+    "size_small": [r"\bSMALL CAP\b", r"\bSMALL\b", r"\bSDAX\b", r"\bSMALL 200\b", r"\bEUR SMALL 200\b"],
     "size_mid": [r"\bMID CAP\b", r"\bMDAX\b", r"\bMID 200\b"],
-    "size_large": [r"\bLARGE CAP\b", r"\bDAX\b", r"\bS P 500\b", r"\bEURO STOXX 50\b", r"\bTOP 20\b"],
+    "size_large": [r"\bLARGE CAP\b", r"\bDAX\b", r"\bS P 500\b", r"\bEURO STOXX 50\b", r"\bTOP 20\b", r"\bEUR LARGE 200\b"],
     "style_value": [r"\bVALUE\b", r"\bVAL\b"],
     "style_growth": [r"\bGROWTH\b"],
     "duration_short": [r"\b0[\s/-]?1\b", r"\b1[\s/-]?3\b", r"\b0[\s/-]?6M\b", r"\b3[\s/-]?6M\b", r"\bSHORT\b", r"\bULTRA SHORT\b", r"\bT[\s-]?BILL\b", r"\bFLOAT(?:ING)? RATE\b", r"\bFLOT RATE\b", r"\bFRN\b"],
@@ -253,27 +269,58 @@ def _normalize_duration_source(name: str | None) -> str:
 
 
 def _parse_duration_bounds(source_text: str) -> tuple[Optional[float], Optional[float]]:
+    def _as_float(value: str) -> float:
+        return float(value.replace(",", "."))
+
     month_range_match = re.search(
         r"\b(0|1|3|6|9|12)\s*[-/]\s*(1|3|6|9|12)\s*M(?:ONTHS?)?\b",
         source_text,
     )
     if month_range_match:
-        low = float(month_range_match.group(1)) / 12.0
-        high = float(month_range_match.group(2)) / 12.0
+        low = _as_float(month_range_match.group(1)) / 12.0
+        high = _as_float(month_range_match.group(2)) / 12.0
         if low <= high:
             return low, high
     range_match = re.search(
-        r"\b(0|1|3|5|7|10|15|20|25|30)\s*[-/]\s*(1|3|5|7|10|15|20|25|30)\s*(?:Y(?:EARS?)?|YR|Y)?\b",
+        r"\b(\d+(?:\.\d+)?)\s*[-/]\s*(\d+(?:\.\d+)?)\s*(?:Y(?:EARS?)?|YR|Y)?\b",
         source_text,
     )
     if range_match:
-        low = float(range_match.group(1))
-        high = float(range_match.group(2))
+        low = _as_float(range_match.group(1))
+        high = _as_float(range_match.group(2))
         if low <= high:
             return low, high
-    plus_match = re.search(r"\b(10|15|20|30)\s*\+\s*(?:Y(?:EARS?)?|YR|Y)?\b", source_text)
+    plus_match = re.search(r"\b(\d+(?:\.\d+)?)\s*\+\s*(?:Y(?:EARS?)?|YR|Y)?\b", source_text)
     if plus_match:
-        return float(plus_match.group(1)), None
+        return _as_float(plus_match.group(1)), None
+
+    maturity_match = re.search(
+        r"\b(?:(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|SEPT|OCT|NOV|DEC|DECEMBER)\s+)?(20\d{2})\s+(?:MATURITY|TERM)\b",
+        source_text,
+    )
+    if maturity_match:
+        month_lookup = {
+            "JAN": 1,
+            "FEB": 2,
+            "MAR": 3,
+            "APR": 4,
+            "MAY": 5,
+            "JUN": 6,
+            "JUL": 7,
+            "AUG": 8,
+            "SEP": 9,
+            "SEPT": 9,
+            "OCT": 10,
+            "NOV": 11,
+            "DEC": 12,
+            "DECEMBER": 12,
+        }
+        target_year = int(maturity_match.group(2))
+        target_month = month_lookup.get(str(maturity_match.group(1) or "").upper(), 12)
+        today = dt.date.today()
+        remaining_years = ((target_year - today.year) * 12 + (target_month - today.month)) / 12.0
+        if remaining_years >= 0:
+            return 0.0, round(remaining_years, 2)
     return None, None
 
 
@@ -438,7 +485,21 @@ def classify_instrument(
             break
 
     theme: Optional[str] = None
-    for theme_name, key in (("robotics", "theme_robotics"), ("ai", "theme_ai"), ("esg", "theme_esg")):
+    for theme_name, key in (
+        ("robotics", "theme_robotics"),
+        ("ai", "theme_ai"),
+        ("water", "theme_water"),
+        ("hydrogen", "theme_hydrogen"),
+        ("blockchain", "theme_blockchain"),
+        ("digital", "theme_digital"),
+        ("circular_economy", "theme_circular_economy"),
+        ("rare_earths", "theme_rare_earths"),
+        ("bionics", "theme_bionics"),
+        ("megatrends", "theme_megatrends"),
+        ("green_deal", "theme_green_deal"),
+        ("brands", "theme_brands"),
+        ("esg", "theme_esg"),
+    ):
         if _has_any(analysis_text, COMPILED_PATTERNS[key]):
             theme = theme_name
             evidence.append(f"theme:{theme_name}")
@@ -449,6 +510,7 @@ def classify_instrument(
         ("quality", "factor_quality"),
         ("momentum", "factor_momentum"),
         ("dividend_income", "factor_dividend"),
+        ("multi_factor", "factor_multi_factor"),
         ("minimum_volatility", "factor_min_vol"),
     ):
         if _has_any(analysis_text, COMPILED_PATTERNS[key]):

@@ -189,6 +189,89 @@ def test_classifies_duration_and_hedge_from_profile_metadata() -> None:
     assert result.hedged_target == "GBP"
 
 
+def test_decimal_duration_ranges_are_supported() -> None:
+    result = classify_instrument(
+        isin="DE0006289473",
+        instrument_name="I.EB.R.G.G.1.5-2.5Y UEEOD",
+        instrument_type="ETF",
+        distribution_policy="Distributing",
+    )
+
+    assert result.asset_class == "bond"
+    assert result.bond_type == "govt"
+    assert result.duration_bucket == "short"
+    assert result.duration_years_low == 1.5
+    assert result.duration_years_high == 2.5
+
+
+def test_decimal_plus_duration_is_long() -> None:
+    result = classify_instrument(
+        isin="DE000A0D8Q31",
+        instrument_name="I.EB.R.GOV.GE.10.5+ U.ETF",
+        instrument_type="ETF",
+        distribution_policy="Distributing",
+    )
+
+    assert result.asset_class == "bond"
+    assert result.bond_type == "govt"
+    assert result.duration_bucket == "long"
+    assert result.duration_years_low == 10.5
+    assert result.duration_years_high is None
+
+
+def test_covered_call_is_not_misclassified_as_bond() -> None:
+    result = classify_instrument(
+        isin="IE0002L5QB31",
+        instrument_name="GLOBAL X S&P 500 COVERED CALL UCITS ETF",
+        instrument_type="ETF",
+        distribution_policy="Distributing",
+    )
+
+    assert result.asset_class == "equity"
+    assert result.geography_country == "United States"
+    assert result.factor == "dividend_income"
+
+
+def test_classifies_europe_large_cap_abbreviation() -> None:
+    result = classify_instrument(
+        isin="DE0005933980",
+        instrument_name="ISH.S.EUR.LARGE 200 U.ETF",
+        instrument_type="ETF",
+        distribution_policy="Accumulating",
+    )
+
+    assert result.asset_class == "equity"
+    assert result.geography_region == "europe"
+    assert result.equity_size == "large"
+
+
+def test_classifies_hydrogen_theme_as_global_thematic_equity() -> None:
+    result = classify_instrument(
+        isin="IE00BMDH1538",
+        instrument_name="VANECK HYDROGEN ECONOMY UCITS ETF",
+        instrument_type="ETF",
+        distribution_policy="Accumulating",
+    )
+
+    assert result.asset_class == "equity"
+    assert result.theme == "hydrogen"
+    assert result.geography_scope == "thematic"
+    assert result.geography_region == "global"
+
+
+def test_worldwide_multi_factor_equity_is_global() -> None:
+    result = classify_instrument(
+        isin="IE00BKZGB098",
+        instrument_name="HSBC MULTI FACTOR WORLDWIDE EQ UCITS ETF",
+        instrument_type="ETF",
+        distribution_policy="Accumulating",
+    )
+
+    assert result.asset_class == "equity"
+    assert result.geography_region == "global"
+    assert result.factor == "multi_factor"
+
+
 def test_classifies_emerging_market_bond_from_benchmark_metadata() -> None:
     result = classify_instrument(
         isin="LU1686830909",
