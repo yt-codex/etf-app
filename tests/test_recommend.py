@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 
-from etf_app.recommend import build_strategy_rows, match_bucket, summarize_gold_policy
+from etf_app.recommend import STRATEGIES, build_strategy_rows, match_bucket, summarize_gold_policy
 from etf_app.taxonomy import classify_instrument
 
 
@@ -155,3 +155,11 @@ def test_build_strategy_rows_can_use_disclosed_non_ucits_gold_exception() -> Non
     assert reason["bucket_policy"] == "disclosed_non_ucits_physical_gold_exception"
     assert reason["bucket_policy_exception"] == "non_ucits_physical_gold"
     assert "non_ucits_gold_exception_disclosed" in reason["filters"]
+
+
+def test_strategy_catalog_is_expanded_and_unique() -> None:
+    assert len(STRATEGIES) >= 20
+    names = [str(strategy["name"]) for strategy in STRATEGIES]
+    filenames = [str(strategy["filename"]) for strategy in STRATEGIES]
+    assert len(names) == len(set(names))
+    assert len(filenames) == len(set(filenames))

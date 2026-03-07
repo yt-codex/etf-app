@@ -11,12 +11,12 @@ import streamlit as st
 
 from etf_app.api import (
     get_completeness_snapshot,
-    get_fund_detail,
     get_strategy_snapshot,
     list_filter_options,
     list_funds,
     open_read_conn,
 )
+from etf_app.recommend import STRATEGIES
 
 
 MISSING_DISPLAY = ""
@@ -65,6 +65,17 @@ DURATION_LABELS = {
     "intermediate": "Intermediate",
     "long": "Long",
 }
+BUCKET_LABELS = {
+    "equity_global": "Global equity",
+    "equity_small_cap_value": "Small-cap value",
+    "long_govt_bonds": "Long government bonds",
+    "intermediate_govt_bonds": "Intermediate government bonds",
+    "long_bonds": "Long bonds",
+    "short_bonds": "Short bonds",
+    "cash": "Cash",
+    "gold": "Gold",
+}
+STRATEGY_UI_TOP_N = 5000
 
 EXPLORER_COLUMNS = [
     "Asset type",
@@ -85,25 +96,6 @@ EXPLORER_COLUMNS = [
     "Bond type",
     "Duration",
 ]
-
-STRATEGY_COLUMNS = [
-    "Bucket",
-    "Asset type",
-    "Issuer",
-    "ISIN",
-    "Ticker",
-    "Fund name",
-    "Distribution",
-    "Currency",
-    "TER",
-    "Region",
-    "Size",
-    "Style",
-    "Sector",
-    "Bond type",
-    "Duration",
-]
-
 
 st.set_page_config(page_title="ETF Atlas", layout="wide", initial_sidebar_state="expanded")
 
@@ -178,6 +170,19 @@ st.markdown(
     }
     .browser-table tbody tr:nth-child(even) td, .strategy-table tbody tr:nth-child(even) td { background: rgba(244,239,231,0.78); }
     .browser-table tbody tr:hover td, .strategy-table tbody tr:hover td { background: rgba(33,69,63,0.08); }
+    .strategy-grid-head {
+        font-size: 0.72rem; letter-spacing: 0.1em; text-transform: uppercase; color: #67746f;
+        font-weight: 600; padding: 0.2rem 0 0.35rem 0; white-space: nowrap;
+    }
+    .strategy-grid-cell {
+        min-height: 2.1rem; display: flex; align-items: center; color: var(--ink);
+        font-size: 0.9rem; line-height: 1.35; padding: 0.1rem 0;
+    }
+    .strategy-grid-cell.muted { color: var(--muted); }
+    .strategy-grid-divider {
+        border-top: 1px solid rgba(21,35,31,0.08);
+        margin: 0.15rem 0 0.45rem 0;
+    }
     .table-note { display: flex; justify-content: space-between; align-items: center; gap: 1rem; margin: 0.2rem 0 0.9rem 0; color: var(--muted); font-size: 0.92rem; }
     .stTabs [data-baseweb="tab-list"] { gap: 0.45rem; background: rgba(255,252,248,0.72); border: 1px solid var(--line); border-radius: 999px; padding: 0.32rem; width: fit-content; }
     .stTabs [data-baseweb="tab"] { border-radius: 999px; padding: 0.58rem 1rem; color: var(--muted); font-weight: 600; height: auto; }
@@ -225,16 +230,11 @@ def load_funds_payload(db_path: str, params_items: tuple[tuple[str, str], ...]) 
 
 
 @st.cache_data(show_spinner=False, ttl=120)
-def load_fund_detail(db_path: str, isin: str) -> Optional[dict[str, object]]:
-    return _with_conn(db_path, get_fund_detail, isin)
-
-
-@st.cache_data(show_spinner=False, ttl=120)
 def load_strategy_payload(
     db_path: str,
     venue: str,
     preferred_currency_order: str,
-    top_n: int,
+    strategy_name: str,
     allow_missing_fees: bool,
     allow_missing_currency: bool,
 ) -> dict[str, object]:
@@ -243,9 +243,10 @@ def load_strategy_payload(
         get_strategy_snapshot,
         venue=venue,
         preferred_currency_order=preferred_currency_order,
-        top_n=top_n,
+        top_n=STRATEGY_UI_TOP_N,
         allow_missing_fees=allow_missing_fees,
         allow_missing_currency=allow_missing_currency,
+        strategy_name=strategy_name,
     )
 
 
@@ -462,38 +463,141 @@ def _fund_table(items: list[dict[str, object]]) -> pd.DataFrame:
     return pd.DataFrame(rows, columns=EXPLORER_COLUMNS)
 
 
-def _strategy_table(rows: list[dict[str, object]]) -> pd.DataFrame:
-    formatted_rows: list[dict[str, str]] = []
+def _bucket_label(value: object) -> str:
+    key = str(value or "")
+    return _display_value(BUCKET_LABELS.get(key, _pretty_label(key)))
+
+
+def _strategy_mix_line(buckets: list[dict[str, object]]) -> str:
+    parts: list[str] = []
+    for bucket in buckets:
+        parts.append(f"{float(bucket['target_weight']):.0f}% {_bucket_label(bucket['bucket_name']).lower()}")
+    return " / ".join(parts)
+
+
+def _group_strategy_rows(rows: list[dict[str, object]]) -> dict[str, list[dict[str, object]]]:
+    grouped: dict[str, list[dict[str, object]]] = {}
     for row in rows:
+        bucket_name = str(row.get("bucket_name") or "")
+        grouped.setdefault(bucket_name, []).append(row)
+    return grouped
+
+
+def _strategy_bucket_asset_label(bucket_name: str, selected_row: Optional[dict[str, object]]) -> str:
+    if selected_row is not None:
         item = {
-            "asset_class": row.get("asset_class"),
-            "geography_region": row.get("geography_region"),
-            "equity_size": row.get("equity_size"),
-            "equity_style": row.get("equity_style"),
-            "sector": row.get("sector"),
-            "bond_type": row.get("bond_type"),
-            "duration_bucket": row.get("duration_bucket"),
+            "asset_class": selected_row.get("asset_class"),
+            "geography_region": selected_row.get("geography_region"),
+            "equity_size": selected_row.get("equity_size"),
+            "equity_style": selected_row.get("equity_style"),
+            "bond_type": selected_row.get("bond_type"),
+            "duration_bucket": selected_row.get("duration_bucket"),
         }
-        formatted_rows.append(
-            {
-                "Bucket": _display_value(_pretty_label(row.get("bucket_name"))),
-                "Asset type": _asset_label(item),
-                "Issuer": _display_value(_normalized_known_text(row.get("issuer_normalized"))),
-                "ISIN": _display_value(_normalized_known_text(row.get("ISIN"))),
-                "Ticker": _display_value(_normalized_known_text(row.get("ticker"))),
-                "Fund name": _display_value(_normalized_known_text(row.get("instrument_name"))),
-                "Distribution": _display_value(_format_distribution(row.get("distribution_policy"))),
-                "Currency": _display_value(_normalized_known_text(row.get("currency"))),
-                "TER": _display_value(_format_percentage(row.get("ongoing_charges"))),
-                "Region": _region_label(item),
-                "Size": _equity_size_label(item),
-                "Style": _equity_style_label(item),
-                "Sector": _sector_label(item),
-                "Bond type": _bond_type_label(item),
-                "Duration": _duration_label(item),
-            }
-        )
-    return pd.DataFrame(formatted_rows, columns=STRATEGY_COLUMNS)
+        return _asset_label(item)
+    if bucket_name.startswith("equity"):
+        return "Equity"
+    if "bond" in bucket_name:
+        return "Bond"
+    if bucket_name == "cash":
+        return "Cash"
+    if bucket_name == "gold":
+        return "Commodity"
+    return MISSING_DISPLAY
+
+
+def _strategy_candidate_label(row: dict[str, object]) -> str:
+    ticker = _normalized_known_text(row.get("ticker"))
+    venue = _normalized_known_text(row.get("primary_venue"))
+    if ticker and venue:
+        return f"{ticker} · {venue}"
+    return ticker or venue or str(row.get("ISIN") or "")
+
+
+def _strategy_cell(value: str, *, muted: bool = False) -> str:
+    css_class = "strategy-grid-cell muted" if muted else "strategy-grid-cell"
+    return f"<div class='{css_class}'>{_escape(value)}</div>"
+
+
+def _render_strategy_bucket_table(strategy: dict[str, object]) -> None:
+    header_labels = [
+        "Bucket",
+        "Target",
+        "Funds shown",
+        "Asset type",
+        "Fund ticker",
+        "ISIN",
+        "Fund name",
+        "Distribution",
+        "Currency",
+        "TER",
+        "Region",
+        "Size",
+        "Style",
+        "Bond type",
+        "Duration",
+    ]
+    column_widths = [1.45, 0.72, 0.78, 0.9, 1.6, 1.25, 2.4, 1.1, 0.9, 0.82, 1.0, 0.8, 0.8, 1.0, 0.9]
+    header_cols = st.columns(column_widths, gap="small")
+    for col, label in zip(header_cols, header_labels):
+        col.markdown(f"<div class='strategy-grid-head'>{_escape(label)}</div>", unsafe_allow_html=True)
+
+    grouped_rows = _group_strategy_rows(list(strategy.get("rows") or []))
+    strategy_slug = str(strategy.get("slug") or strategy.get("name") or "strategy")
+
+    for bucket in strategy["buckets"]:
+        bucket_name = str(bucket["bucket_name"])
+        candidates = grouped_rows.get(bucket_name, [])
+        selected_row: Optional[dict[str, object]] = None
+        row_cols = st.columns(column_widths, gap="small")
+
+        option_ids = [str(candidate["ISIN"]) for candidate in candidates]
+        select_key = f"strategy_picker_{strategy_slug}_{bucket_name}"
+        if option_ids:
+            current_option = st.session_state.get(select_key)
+            if current_option not in option_ids:
+                st.session_state[select_key] = option_ids[0]
+            candidate_map = {str(candidate["ISIN"]): candidate for candidate in candidates}
+            with row_cols[4]:
+                selected_isin = st.selectbox(
+                    f"{strategy_slug}-{bucket_name}",
+                    option_ids,
+                    format_func=lambda isin: _strategy_candidate_label(candidate_map[isin]),
+                    key=select_key,
+                    label_visibility="collapsed",
+                )
+            selected_row = candidate_map[selected_isin]
+        else:
+            row_cols[4].markdown(_strategy_cell("No candidates", muted=True), unsafe_allow_html=True)
+
+        item = {
+            "asset_class": selected_row.get("asset_class") if selected_row else None,
+            "geography_region": selected_row.get("geography_region") if selected_row else None,
+            "equity_size": selected_row.get("equity_size") if selected_row else None,
+            "equity_style": selected_row.get("equity_style") if selected_row else None,
+            "bond_type": selected_row.get("bond_type") if selected_row else None,
+            "duration_bucket": selected_row.get("duration_bucket") if selected_row else None,
+        }
+
+        row_cols[0].markdown(_strategy_cell(_bucket_label(bucket_name)), unsafe_allow_html=True)
+        row_cols[1].markdown(_strategy_cell(f"{float(bucket['target_weight']):.0f}%"), unsafe_allow_html=True)
+        row_cols[2].markdown(_strategy_cell(str(len(candidates))), unsafe_allow_html=True)
+        row_cols[3].markdown(_strategy_cell(_strategy_bucket_asset_label(bucket_name, selected_row)), unsafe_allow_html=True)
+
+        detail_values = [
+            _display_value(_normalized_known_text(selected_row.get("ISIN"))) if selected_row else MISSING_DISPLAY,
+            _display_value(_normalized_known_text(selected_row.get("instrument_name"))) if selected_row else MISSING_DISPLAY,
+            _display_value(_format_distribution(selected_row.get("distribution_policy"))) if selected_row else MISSING_DISPLAY,
+            _display_value(_normalized_known_text(selected_row.get("currency"))) if selected_row else MISSING_DISPLAY,
+            _display_value(_format_percentage(selected_row.get("ongoing_charges"))) if selected_row else MISSING_DISPLAY,
+            _region_label(item) if selected_row else MISSING_DISPLAY,
+            _equity_size_label(item) if selected_row else MISSING_DISPLAY,
+            _equity_style_label(item) if selected_row else MISSING_DISPLAY,
+            _bond_type_label(item) if selected_row else MISSING_DISPLAY,
+            _duration_label(item) if selected_row else MISSING_DISPLAY,
+        ]
+        for col, value in zip(row_cols[5:], detail_values):
+            col.markdown(_strategy_cell(value, muted=value == MISSING_DISPLAY), unsafe_allow_html=True)
+        st.markdown("<div class='strategy-grid-divider'></div>", unsafe_allow_html=True)
 
 
 def _coverage_metric(field: dict[str, object]) -> str:
@@ -528,62 +632,6 @@ def _render_static_table(df: pd.DataFrame, *, table_class: str, height: int) -> 
     )
 
 
-def _render_fund_detail(detail: dict[str, object]) -> None:
-    item = detail
-    title = _display_value(_normalized_known_text(detail.get("instrument_name")))
-    subtitle = " | ".join(
-        _compact_values(
-            [
-                _display_value(_normalized_known_text(detail.get("issuer_name"))),
-                _display_value(_normalized_known_text(detail.get("isin"))),
-                _display_value(_normalized_known_text(detail.get("primary_venue"))),
-            ]
-        )
-    )
-    chips = _compact_values(
-        [
-        _asset_label(item),
-        _region_label(item),
-        _display_value(_pretty_label(detail.get("domicile_country"))),
-        _display_value(_format_distribution(detail.get("distribution_policy"))),
-        ]
-    )
-    tiles = [
-        ("Ticker", _display_value(_normalized_known_text(detail.get("ticker")))),
-        ("Fund size", _display_value(_format_fund_size(detail.get("fund_size_value"), detail.get("fund_size_currency")))),
-        ("Fund size as of", _display_value(_normalized_known_text(detail.get("fund_size_asof")))),
-        ("Trading currency", _display_value(_normalized_known_text(detail.get("currency")))),
-        ("TER", _display_value(_format_percentage(detail.get("ongoing_charges")))),
-        ("Benchmark", _display_value(_normalized_known_text(detail.get("benchmark_name")))),
-        ("Size", _equity_size_label(item)),
-        ("Style", _equity_style_label(item)),
-        ("Sector", _sector_label(item)),
-        ("Replication", _replication_label(detail.get("replication_method"))),
-        ("Bond type", _bond_type_label(item)),
-        ("Duration", _duration_label(item)),
-        ("Hedged", _format_yes_no_optional(detail.get("hedged_flag"))),
-        ("Hedge target", _display_value(_pretty_label(detail.get("hedged_target")))),
-    ]
-    visible_tiles = [(label, value) for label, value in tiles if value]
-    chip_html = "".join(f"<span class='chip'>{_escape(value)}</span>" for value in chips)
-    tile_html = "".join(
-        f"<div class='detail-tile'><span>{_escape(label)}</span><strong>{_escape(value)}</strong></div>"
-        for label, value in visible_tiles
-    )
-    st.markdown(
-        f"""
-        <div class="detail-box">
-            <div class="eyebrow">Fund details</div>
-            <h3>{_escape(title)}</h3>
-            <p class="detail-meta">{_escape(subtitle)}</p>
-            <div class="chip-row">{chip_html}</div>
-            <div class="detail-grid">{tile_html}</div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-
 db_path = _db_path()
 if not Path(db_path).exists():
     st.error(f"Database not found at `{db_path}`. Set `ETF_APP_DB_PATH` or add `db_path` to Streamlit secrets.")
@@ -592,9 +640,7 @@ if not Path(db_path).exists():
 filters_payload = load_filters(db_path)
 completeness = load_completeness_payload(db_path, "ALL")
 
-overview = completeness["universe"]["overview"]
 profile_fields = completeness["product_profile"]["fields"]
-taxonomy = completeness["taxonomy"]
 strict_filters = completeness["strategy_readiness"]["strict_hard_filters"]
 fee_gaps = completeness["fee_gaps"]["missing_fees_top_issuers"]
 
@@ -607,15 +653,6 @@ st.markdown(
     </div>
     """,
     unsafe_allow_html=True,
-)
-
-_render_metric_grid(
-    [
-        {"label": "Universe", "value": f"{overview['total_instruments']}", "meta": "UCITS ETFs currently in scope"},
-        {"label": "TER shown", "value": _coverage_metric(profile_fields["ongoing_charges"]), "meta": f"{profile_fields['ongoing_charges']['pct']:.2f}% available"},
-        {"label": "Domicile", "value": _coverage_metric(profile_fields["domicile_country"]), "meta": f"{profile_fields['domicile_country']['pct']:.2f}% available"},
-        {"label": "Fund size", "value": _coverage_metric(profile_fields["fund_size_value"]), "meta": f"{profile_fields['fund_size_value']['pct']:.2f}% available"},
-    ]
 )
 
 active_view = _toggle_choice("View", ["Explorer", "Strategies", "Coverage"], default="Explorer", key="active_view")
@@ -745,7 +782,7 @@ if active_view == "Explorer":
     page = max(1, min(int(st.session_state.get("browse_page", 1)), max_pages))
     st.session_state["browse_page"] = page
 
-    nav_left, nav_mid, nav_right, nav_count = st.columns([0.9, 1.0, 0.9, 1.2], gap="medium")
+    nav_left, nav_mid, nav_right = st.columns([0.9, 1.0, 0.9], gap="medium")
     with nav_left:
         if st.button("Previous page", disabled=page <= 1, use_container_width=True):
             st.session_state["browse_page"] = max(1, page - 1)
@@ -756,30 +793,16 @@ if active_view == "Explorer":
         if st.button("Next page", disabled=page >= max_pages, use_container_width=True):
             st.session_state["browse_page"] = min(max_pages, page + 1)
             st.rerun()
-    with nav_count:
-        st.markdown(f"<div class='stat-card'><span>Order</span><strong>{_escape(sort_label)}</strong><em>{_escape(direction_label)}</em></div>", unsafe_allow_html=True)
 
     fund_params["offset"] = str((page - 1) * page_size)
     funds_payload = load_funds_payload(db_path, tuple(sorted(fund_params.items())))
     st.markdown(f"<div class='table-note'><span>Showing page {page} of {max_pages}</span><span>{funds_payload['total']} funds match the current filters</span></div>", unsafe_allow_html=True)
 
-    left, right = st.columns([2.1, 1.0], gap="large")
-    with left:
-        fund_table = _fund_table(funds_payload["items"])
-        if fund_table.empty:
-            st.info("No funds matched the current filters.")
-        else:
-            _render_static_table(fund_table, table_class="browser-table", height=620)
-    with right:
-        options = funds_payload["items"]
-        if options:
-            option_labels = [f"{item['instrument_name']} | {item['isin']}" for item in options]
-            selected_label = st.selectbox("Inspect fund", option_labels, key="fund_detail_picker")
-            detail = load_fund_detail(db_path, options[option_labels.index(selected_label)]["isin"])
-            if detail:
-                _render_fund_detail(detail)
-        else:
-            st.info("No fund details available for the current slice.")
+    fund_table = _fund_table(funds_payload["items"])
+    if fund_table.empty:
+        st.info("No funds matched the current filters.")
+    else:
+        _render_static_table(fund_table, table_class="browser-table", height=620)
 
 elif active_view == "Strategies":
     st.markdown(
@@ -787,57 +810,58 @@ elif active_view == "Strategies":
         <div class="section-box">
             <div class="eyebrow">Model portfolios</div>
             <h3>Review one strategy at a time.</h3>
-            <p class="section-copy">Choose a portfolio template to see the ETFs currently filling each sleeve of the strategy.</p>
+            <p class="section-copy">Each sleeve is shown once. Pick a candidate ticker inside the row to inspect the matching UCITS implementation for that bucket.</p>
         </div>
         """,
         unsafe_allow_html=True,
     )
 
-    ctrl_one, ctrl_two, ctrl_three = st.columns([0.95, 0.85, 1.3], gap="medium")
+    strategy_catalog = {str(strategy["name"]): strategy for strategy in STRATEGIES}
+    selected_strategy_name = st.selectbox("Strategy", list(strategy_catalog.keys()), key="strategy_selector")
+
+    ctrl_one, ctrl_two = st.columns([0.95, 1.3], gap="medium")
     strategy_exchange_options = {"All exchanges": "ALL", "London": "XLON", "Xetra": "XETR"}
     strategy_exchange_label = ctrl_one.selectbox("Exchange scope", list(strategy_exchange_options.keys()), key="strategy_venue")
     strategy_venue = strategy_exchange_options[strategy_exchange_label]
-    top_n = ctrl_two.selectbox("Funds per sleeve", [1, 2, 3, 4, 5], index=2, key="strategy_top_n")
-    preferred_currency_order = ctrl_three.text_input("Preferred trading currencies", value="USD,EUR,GBP", key="strategy_currency_order")
+    preferred_currency_order = ctrl_two.text_input("Preferred trading currencies", value="USD,EUR,GBP", key="strategy_currency_order")
     allow_missing_fees = False
     allow_missing_currency = False
 
-    strategy_payload = load_strategy_payload(db_path, strategy_venue, preferred_currency_order, int(top_n), allow_missing_fees, allow_missing_currency)
-    strategy_names = [str(strategy["name"]) for strategy in strategy_payload["strategies"]]
-    selected_strategy_name = st.selectbox("Strategy", strategy_names, key="strategy_selector")
-    selected_strategy = next(strategy for strategy in strategy_payload["strategies"] if strategy["name"] == selected_strategy_name)
-
-    bucket_summary_rows = []
-    for bucket in selected_strategy["buckets"]:
-        bucket_name = str(bucket["bucket_name"])
-        bucket_summary_rows.append(
-            {
-                "Bucket": bucket_name.replace("_", " ").title(),
-                "Target weight": f"{float(bucket['target_weight']):.0f}%",
-                "Funds shown": int(selected_strategy["emitted"].get(bucket_name, 0)),
-            }
-        )
-    min_bucket = min(selected_strategy["emitted"].values()) if selected_strategy["emitted"] else 0
-
-    _render_metric_grid(
-        [
-            {"label": "Strategy", "value": selected_strategy["name"], "meta": selected_strategy["description"]},
-            {"label": "Rows shown", "value": str(len(selected_strategy["rows"])), "meta": "Selected funds across all sleeves"},
-            {"label": "Smallest sleeve", "value": str(min_bucket), "meta": "Lowest sleeve count in this run"},
-            {"label": "Exchange scope", "value": strategy_exchange_label, "meta": f"Top {top_n} fund(s) per sleeve"},
-        ]
+    strategy_payload = load_strategy_payload(
+        db_path,
+        strategy_venue,
+        preferred_currency_order,
+        selected_strategy_name,
+        allow_missing_fees,
+        allow_missing_currency,
     )
-
-    summary_left, summary_right = st.columns([0.95, 1.05], gap="large")
-    with summary_left:
-        st.markdown("#### Sleeve summary")
-        st.table(pd.DataFrame(bucket_summary_rows))
-    with summary_right:
-        if selected_strategy["rows"]:
-            st.markdown("#### Strategy selections")
-            _render_static_table(_strategy_table(selected_strategy["rows"]), table_class="strategy-table", height=460)
-        else:
-            st.info("This strategy did not emit any rows under the current constraints.")
+    if not strategy_payload["strategies"]:
+        st.info("This strategy is not available under the current constraints.")
+    else:
+        selected_strategy = strategy_payload["strategies"][0]
+        source_url = str(selected_strategy.get("source_url") or "")
+        source_html = (
+            f"<p class='section-copy' style='margin-top:0.7rem;'>Inspired by the allocation at "
+            f"<a href='{_escape(source_url)}' target='_blank'>Lazy Portfolio ETF</a>.</p>"
+            if source_url
+            else ""
+        )
+        st.markdown(
+            f"""
+            <div class="section-box">
+                <div class="eyebrow">Strategy brief</div>
+                <h3>{_escape(selected_strategy['name'])}</h3>
+                <p class="section-copy">{_escape(str(selected_strategy.get('description') or ''))}</p>
+                <p class="section-copy" style="margin-top:0.7rem;"><strong>Construction.</strong> {_escape(_strategy_mix_line(selected_strategy['buckets']))}.</p>
+                <p class="section-copy" style="margin-top:0.55rem;">{_escape(str(selected_strategy.get('detail') or ''))}</p>
+                <p class="section-copy" style="margin-top:0.55rem;"><strong>Implementation note.</strong> {_escape(str(selected_strategy.get('implementation_note') or ''))}</p>
+                {source_html}
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        st.caption("Funds shown are unbounded in the UI: each sleeve includes every ranked candidate returned by the final bucket filter.")
+        _render_strategy_bucket_table(selected_strategy)
 
 else:
     st.markdown(

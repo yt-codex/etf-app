@@ -222,9 +222,19 @@ def test_api_endpoints_expose_filters_completeness_and_strategies(tmp_path) -> N
 
     status, _headers, strategy_payload = call_json(app, "/api/strategies", "venue=ALL&top_n=1")
     assert status == "200 OK"
-    all_weather = next(item for item in strategy_payload["strategies"] if item["name"] == "All-Weather")
+    all_weather = next(item for item in strategy_payload["strategies"] if item["name"] == "Ray Dalio All Weather Portfolio")
     assert all_weather["rows"]
     assert isinstance(all_weather["rows"][0]["selection_reason"], dict)
+
+    status, _headers, filtered_strategy_payload = call_json(
+        app,
+        "/api/strategies",
+        "venue=ALL&top_n=1&strategy_name=Ray+Dalio+All+Weather+Portfolio",
+    )
+    assert status == "200 OK"
+    assert [strategy["name"] for strategy in filtered_strategy_payload["strategies"]] == ["Ray Dalio All Weather Portfolio"]
+    assert filtered_strategy_payload["strategies"][0]["detail"]
+    assert filtered_strategy_payload["strategies"][0]["implementation_note"]
 
 
 def test_health_and_fund_detail_routes(tmp_path) -> None:

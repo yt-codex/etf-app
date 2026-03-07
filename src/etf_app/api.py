@@ -438,6 +438,7 @@ def get_strategy_snapshot(
     top_n: int,
     allow_missing_fees: bool,
     allow_missing_currency: bool,
+    strategy_name: str | None = None,
 ) -> dict[str, object]:
     currency_order = parse_currency_order(preferred_currency_order)
     selected_venues = venue_scope(venue)
@@ -446,7 +447,12 @@ def get_strategy_snapshot(
     gold_exception_rows = load_gold_exception_candidates(conn, selected_venues)
 
     strategies: list[dict[str, object]] = []
-    for strategy in STRATEGIES:
+    selected_strategies = list(STRATEGIES)
+    if strategy_name:
+        selected_strategies = [strategy for strategy in STRATEGIES if str(strategy["name"]) == strategy_name]
+        if not selected_strategies:
+            raise ValueError(f"unknown strategy_name: {strategy_name}")
+    for strategy in selected_strategies:
         rows, emitted, diagnostics = build_strategy_rows(
             strategy,
             base_rows,
@@ -492,8 +498,12 @@ def get_strategy_snapshot(
             strategy_diagnostics[bucket_name] = bucket_diag
         strategies.append(
             {
+                "slug": str(strategy.get("slug") or ""),
                 "name": str(strategy["name"]),
                 "description": str(strategy["description"]),
+                "detail": str(strategy.get("detail") or ""),
+                "implementation_note": str(strategy.get("implementation_note") or ""),
+                "source_url": str(strategy.get("source_url") or ""),
                 "filename": str(strategy["filename"]),
                 "buckets": [{"bucket_name": bucket_name, "target_weight": float(weight)} for bucket_name, weight in strategy["buckets"]],
                 "emitted": {key: int(value) for key, value in emitted.items()},
@@ -603,9 +613,10 @@ def create_app(db_path: str) -> Callable[..., list[bytes]]:
                         conn,
                         venue=params.get("venue", "ALL"),
                         preferred_currency_order=params.get("preferred_currency_order", "USD,EUR,GBP"),
-                        top_n=_parse_int(params.get("top_n"), default=5, minimum=1, maximum=25),
+                        top_n=_parse_int(params.get("top_n"), default=5, minimum=1, maximum=5000),
                         allow_missing_fees=bool(_parse_bool(params.get("allow_missing_fees")) or False),
                         allow_missing_currency=bool(_parse_bool(params.get("allow_missing_currency")) or False),
+                        strategy_name=params.get("strategy_name"),
                     )
                     return _json_response(start_response, "200 OK", payload)
                 if path == "/api/completeness":
