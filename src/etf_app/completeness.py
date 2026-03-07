@@ -19,6 +19,7 @@ from etf_app.recommend import (
     filter_rows_by_venues,
     inspect_gold_policy,
     load_base_candidates,
+    load_gold_exception_candidates,
     parse_currency_order,
     venue_scope,
 )
@@ -260,6 +261,7 @@ def collect_strategy_summary(
         allow_missing_currency=allow_missing_currency,
     )
     gold_policy = inspect_gold_policy(conn, base_rows=base_rows, selected_venues=selected_venues)
+    gold_exception_rows = load_gold_exception_candidates(conn, selected_venues)
 
     strategies: dict[str, object] = {}
     for strategy in STRATEGIES:
@@ -272,6 +274,7 @@ def collect_strategy_summary(
             allow_missing_fees=allow_missing_fees,
             allow_missing_currency=allow_missing_currency,
             gold_policy=gold_policy,
+            gold_exception_rows=gold_exception_rows,
         )
         buckets: dict[str, object] = {}
         for bucket_name, _target_weight in strategy["buckets"]:
@@ -301,7 +304,7 @@ def collect_strategy_summary(
                 bucket_summary["gold_policy"] = {
                     "policy_name": gold_policy.policy_name,
                     "eligible_ucits_gold_count": gold_policy.eligible_ucits_gold_count,
-                    "excluded_non_ucits_gold_count": gold_policy.excluded_non_ucits_gold_count,
+                    "eligible_non_ucits_exception_gold_count": gold_policy.eligible_non_ucits_exception_gold_count,
                     "ignored_gold_equity_proxy_count": gold_policy.ignored_gold_equity_proxy_count,
                     "note": gold_policy.note,
                 }

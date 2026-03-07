@@ -261,7 +261,29 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         action="store_true",
         help="Re-parse cached PDFs only (no network calls)",
     )
+    parser.add_argument(
+        "--issuer",
+        action="append",
+        default=[],
+        help="Optional issuer filter; repeat or pass comma-separated values",
+    )
     return parser.parse_args(argv)
+
+
+def parse_issuer_filters(values: list[str]) -> list[str]:
+    out: list[str] = []
+    for value in values:
+        for piece in str(value or "").split(","):
+            token = normalize_space(piece).upper()
+            if token:
+                out.append(token)
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for token in out:
+        if token not in seen:
+            deduped.append(token)
+            seen.add(token)
+    return deduped
 
 
 class HttpClient:
@@ -1138,7 +1160,6 @@ def find_ongoing_charges_windowed(
 
     attempts: list[dict[str, object]] = []
     best_plausible: Optional[float] = None
-    first_any: Optional[float] = None
     first_keyword_idx: Optional[int] = None
 
     for m in keyword_regex.finditer(text):
@@ -1168,8 +1189,6 @@ def find_ongoing_charges_windowed(
         preferred_plausible = min(plausible_positive) if plausible_positive else (min(plausible) if plausible else None)
         if preferred_plausible is not None:
             chosen = preferred_plausible
-        if first_any is None and chosen is not None:
-            first_any = chosen
         if preferred_plausible is not None:
             candidate = preferred_plausible
             if best_plausible is None or candidate < best_plausible:
@@ -1189,7 +1208,7 @@ def find_ongoing_charges_windowed(
             }
         )
 
-    return best_plausible if best_plausible is not None else first_any, attempts, first_keyword_idx
+    return best_plausible, attempts, first_keyword_idx
 
 
 def detect_language_from_url(url: str) -> Optional[str]:
@@ -1698,12 +1717,29 @@ def load_universe_rows(
     venue: str,
     priority_mode: bool,
     mode: str,
+    issuer_filters: Optional[list[str]] = None,
 ) -> list[sqlite3.Row]:
     where_clauses = ["UPPER(COALESCE(u.instrument_type, '')) = 'ETF'"]
     params: list[object] = []
     if venue != "ALL":
         where_clauses.append("u.primary_venue_mic = ?")
         params.append(venue)
+
+    if issuer_filters:
+        issuer_terms = [str(term).upper() for term in issuer_filters if str(term).strip()]
+        issuer_clauses: list[str] = []
+        for term in issuer_terms:
+            pattern = f"%{term}%"
+            issuer_clauses.append(
+                "("
+                "UPPER(COALESCE(u.issuer_normalized, '')) LIKE ? OR "
+                "UPPER(COALESCE(iss.normalized_name, '')) LIKE ? OR "
+                "UPPER(COALESCE(u.instrument_name, '')) LIKE ?"
+                ")"
+            )
+            params.extend([pattern, pattern, pattern])
+        if issuer_clauses:
+            where_clauses.append("(" + " OR ".join(issuer_clauses) + ")")
 
     if mode == "template":
         where_clauses.append(
@@ -2154,36 +2190,70 @@ def print_template_success_samples(conn: sqlite3.Connection, instrument_ids: lis
 def print_outlier_stats(conn: sqlite3.Connection) -> None:
     total_parsed = conn.execute(
         """
+        WITH ranked AS (
+            SELECT
+                cs.instrument_id,
+                cs.ongoing_charges,
+                ROW_NUMBER() OVER (
+                    PARTITION BY cs.instrument_id
+                    ORDER BY cs.asof_date DESC, cs.cost_id DESC
+                ) AS rn
+            FROM cost_snapshot cs
+            WHERE cs.instrument_id IN (SELECT CAST(instrument_id AS INTEGER) FROM universe_mvp)
+        )
         SELECT COUNT(*)
-        FROM cost_snapshot cs
-        WHERE cs.ongoing_charges IS NOT NULL
-          AND cs.instrument_id IN (SELECT CAST(instrument_id AS INTEGER) FROM universe_mvp)
+        FROM ranked
+        WHERE rn = 1
+          AND ongoing_charges IS NOT NULL
         """
     ).fetchone()[0]
     outliers = conn.execute(
         """
+        WITH ranked AS (
+            SELECT
+                cs.instrument_id,
+                cs.ongoing_charges,
+                ROW_NUMBER() OVER (
+                    PARTITION BY cs.instrument_id
+                    ORDER BY cs.asof_date DESC, cs.cost_id DESC
+                ) AS rn
+            FROM cost_snapshot cs
+            WHERE cs.instrument_id IN (SELECT CAST(instrument_id AS INTEGER) FROM universe_mvp)
+        )
         SELECT COUNT(*)
-        FROM cost_snapshot cs
-        WHERE cs.ongoing_charges IS NOT NULL
-          AND (cs.ongoing_charges < 0 OR cs.ongoing_charges > 3)
-          AND cs.instrument_id IN (SELECT CAST(instrument_id AS INTEGER) FROM universe_mvp)
+        FROM ranked
+        WHERE rn = 1
+          AND ongoing_charges IS NOT NULL
+          AND (ongoing_charges < 0 OR ongoing_charges > 3)
         """
     ).fetchone()[0]
     print("\n=== Sanity ===")
-    print(f"parsed ongoing_charges rows: {total_parsed}")
-    print(f"outliers outside [0, 3]%: {outliers}")
+    print(f"latest parsed ongoing_charges rows: {total_parsed}")
+    print(f"latest outliers outside [0, 3]%: {outliers}")
     if outliers:
-        print("sample outliers:")
+        print("sample latest outliers:")
         for row in conn.execute(
             """
-            SELECT i.isin, cs.ongoing_charges, COALESCE(d.url, 'NULL') AS kid_url
-            FROM cost_snapshot cs
-            JOIN instrument i ON i.instrument_id = cs.instrument_id
-            LEFT JOIN document d ON d.document_id = cs.doc_id
-            WHERE cs.ongoing_charges IS NOT NULL
-              AND (cs.ongoing_charges < 0 OR cs.ongoing_charges > 3)
-              AND cs.instrument_id IN (SELECT CAST(instrument_id AS INTEGER) FROM universe_mvp)
-            ORDER BY cs.ongoing_charges DESC
+            WITH ranked AS (
+                SELECT
+                    cs.instrument_id,
+                    cs.ongoing_charges,
+                    cs.doc_id,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY cs.instrument_id
+                        ORDER BY cs.asof_date DESC, cs.cost_id DESC
+                    ) AS rn
+                FROM cost_snapshot cs
+                WHERE cs.instrument_id IN (SELECT CAST(instrument_id AS INTEGER) FROM universe_mvp)
+            )
+            SELECT i.isin, r.ongoing_charges, COALESCE(d.url, 'NULL') AS kid_url
+            FROM ranked r
+            JOIN instrument i ON i.instrument_id = r.instrument_id
+            LEFT JOIN document d ON d.document_id = r.doc_id
+            WHERE r.rn = 1
+              AND r.ongoing_charges IS NOT NULL
+              AND (r.ongoing_charges < 0 OR r.ongoing_charges > 3)
+            ORDER BY r.ongoing_charges DESC
             LIMIT 20
             """
         ):
@@ -2215,11 +2285,13 @@ def main(argv: list[str]) -> int:
         )
 
         priority_mode = args.priority_mode == "on"
+        issuer_filters = parse_issuer_filters(args.issuer)
         log(
             f"Selection mode: mode={args.mode}, venue={args.venue}, "
-            f"priority_mode={'on' if priority_mode else 'off'}, parse_only={args.parse_only}"
+            f"priority_mode={'on' if priority_mode else 'off'}, parse_only={args.parse_only}, "
+            f"issuer_filters={issuer_filters if issuer_filters else 'none'}"
         )
-        rows = load_universe_rows(conn, args.limit, args.venue, priority_mode, args.mode)
+        rows = load_universe_rows(conn, args.limit, args.venue, priority_mode, args.mode, issuer_filters)
         if not rows:
             log("No universe_mvp rows to process.")
             conn.commit()

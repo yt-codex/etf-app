@@ -44,6 +44,11 @@ from etf_app import cli
             ("db.sqlite", "artifacts", "ALL", "USD,EUR,GBP", 5, False, False),
         ),
         (
+            ["backfill-issuer-fees", "--db-path", "db.sqlite", "--source", "spdr", "--source", "jpmorgan"],
+            "run_issuer_fee_enrichment",
+            ("db.sqlite", ["spdr", "jpmorgan"]),
+        ),
+        (
             ["recommend", "--db-path", "db.sqlite"],
             "run_recommend_strategies",
             ("db.sqlite", "ALL", "USD,EUR,GBP", 5, False, False, "artifacts"),

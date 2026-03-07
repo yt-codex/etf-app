@@ -6,6 +6,7 @@ from pathlib import Path
 
 from etf_app import listing_hygiene, listing_ingest, universe_refine
 from etf_app.completeness import generate_completeness_report
+from etf_app.issuer_fee_enrich import run_issuer_fee_backfill
 from etf_app.recommend import run_recommendations
 from etf_app.taxonomy import ensure_taxonomy_schema, load_universe_rows, print_taxonomy_stats, upsert_taxonomy
 
@@ -81,6 +82,18 @@ def build_parser() -> argparse.ArgumentParser:
         "--allow-missing-currency",
         action="store_true",
         help="Allow strategy-readiness stats to tolerate missing trading currency",
+    )
+
+    issuer_fees = subparsers.add_parser(
+        "backfill-issuer-fees",
+        help="Backfill missing fees from official issuer product-list PDFs",
+    )
+    issuer_fees.add_argument("--db-path", default="stage1_etf.db", help="Path to SQLite DB")
+    issuer_fees.add_argument(
+        "--source",
+        action="append",
+        default=[],
+        help="Optional source key filter; repeatable. Supported: spdr, jpmorgan",
     )
 
     recommend = subparsers.add_parser(
@@ -198,6 +211,13 @@ def run_completeness_report(
     return 0
 
 
+def run_issuer_fee_enrichment(db_path: str, source: list[str]) -> int:
+    results = run_issuer_fee_backfill(db_path=db_path, source_keys=source)
+    for key, stats in results.items():
+        print(f"{key}: attempted={stats['attempted']} matched={stats['matched']} inserted={stats['inserted']}")
+    return 0
+
+
 def run_recommend_strategies(
     db_path: str,
     venue: str,
@@ -236,6 +256,8 @@ def main(argv: list[str] | None = None) -> int:
             args.allow_missing_fees,
             args.allow_missing_currency,
         )
+    if args.command == "backfill-issuer-fees":
+        return run_issuer_fee_enrichment(args.db_path, args.source)
     if args.command in {"recommend", "recommend-strategies"}:
         return run_recommend_strategies(
             args.db_path,
