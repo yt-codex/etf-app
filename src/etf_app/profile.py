@@ -90,6 +90,10 @@ def ensure_product_profile_schema(conn: sqlite3.Connection) -> None:
             replication_method TEXT NULL,
             hedged_flag INTEGER NULL CHECK (hedged_flag IN (0, 1)),
             hedged_target TEXT NULL,
+            equity_size_hint TEXT NULL,
+            equity_style_hint TEXT NULL,
+            sector_hint TEXT NULL,
+            sector_weight REAL NULL,
             updated_at TEXT NOT NULL,
             FOREIGN KEY (instrument_id) REFERENCES instrument(instrument_id)
         )
@@ -111,6 +115,10 @@ def ensure_product_profile_schema(conn: sqlite3.Connection) -> None:
     ensure_column(conn, "product_profile", "replication_method", "TEXT")
     ensure_column(conn, "product_profile", "hedged_flag", "INTEGER")
     ensure_column(conn, "product_profile", "hedged_target", "TEXT")
+    ensure_column(conn, "product_profile", "equity_size_hint", "TEXT")
+    ensure_column(conn, "product_profile", "equity_style_hint", "TEXT")
+    ensure_column(conn, "product_profile", "sector_hint", "TEXT")
+    ensure_column(conn, "product_profile", "sector_weight", "REAL")
     ensure_column(conn, "product_profile", "updated_at", "TEXT", f"'{now_utc_iso()}'")
 
 
@@ -398,6 +406,58 @@ def _normalize_fund_size_scope(value: object) -> Optional[str]:
     return text.lower()
 
 
+def _normalize_equity_size_hint(value: object) -> Optional[str]:
+    text = _normalize_text_value(value)
+    if not text:
+        return None
+    upper = text.upper()
+    if "LARGE" in upper or "GIANT" in upper:
+        return "large"
+    if "MID" in upper or "MEDIUM" in upper:
+        return "mid"
+    if "SMALL" in upper or "MICRO" in upper:
+        return "small"
+    return text.lower()
+
+
+def _normalize_equity_style_hint(value: object) -> Optional[str]:
+    text = _normalize_text_value(value)
+    if not text:
+        return None
+    upper = text.upper()
+    if "VALUE" in upper:
+        return "value"
+    if "GROWTH" in upper:
+        return "growth"
+    if "BLEND" in upper or "CORE" in upper:
+        return "blend"
+    return text.lower()
+
+
+def _normalize_sector_hint(value: object) -> Optional[str]:
+    text = _normalize_text_value(value)
+    if not text:
+        return None
+    mapping = {
+        "TECHNOLOGY": "technology",
+        "HEALTHCARE": "health_care",
+        "HEALTH CARE": "health_care",
+        "FINANCIAL SERVICES": "financials",
+        "FINANCIALS": "financials",
+        "ENERGY": "energy",
+        "UTILITIES": "utilities",
+        "INDUSTRIALS": "industrials",
+        "REAL ESTATE": "real_estate",
+        "BASIC MATERIALS": "materials",
+        "MATERIALS": "materials",
+        "COMMUNICATION SERVICES": "communication",
+        "COMMUNICATION": "communication",
+        "CONSUMER CYCLICAL": "consumer_cyclical",
+        "CONSUMER DEFENSIVE": "consumer_defensive",
+    }
+    return mapping.get(text.upper(), text.lower().replace(" ", "_"))
+
+
 def _extract_profile_metadata_from_payload(payload: dict[str, object]) -> dict[str, object]:
     extracted: dict[str, object] = {}
     for container_key in ("parsed", "parse", "parse_ongoing", "profile_metadata", "metadata"):
@@ -465,6 +525,18 @@ def _extract_profile_metadata_from_payload(payload: dict[str, object]) -> dict[s
     )
     if hedged_flag is None and hedged_target is not None:
         hedged_flag = 1
+    equity_size_hint = _normalize_equity_size_hint(
+        _first_present(payload, "equity_size_hint", "equity_size", "market_cap", "market_cap_category")
+    )
+    equity_style_hint = _normalize_equity_style_hint(
+        _first_present(payload, "equity_style_hint", "equity_style", "investment_style", "investment_style_hint")
+    )
+    sector_hint = _normalize_sector_hint(
+        _first_present(payload, "sector_hint", "top_sector", "dominant_sector", "sector")
+    )
+    sector_weight = _coerce_optional_float(
+        _first_present(payload, "sector_weight", "top_sector_weight", "dominant_sector_weight")
+    )
 
     extracted["benchmark_name"] = benchmark_name
     extracted["asset_class_hint"] = asset_class_hint
@@ -476,6 +548,10 @@ def _extract_profile_metadata_from_payload(payload: dict[str, object]) -> dict[s
     extracted["replication_method"] = replication_method
     extracted["hedged_flag"] = hedged_flag
     extracted["hedged_target"] = hedged_target
+    extracted["equity_size_hint"] = equity_size_hint
+    extracted["equity_style_hint"] = equity_style_hint
+    extracted["sector_hint"] = sector_hint
+    extracted["sector_weight"] = sector_weight
     return extracted
 
 
@@ -506,6 +582,10 @@ def _merge_profile_metadata_rows(
                 "replication_method": None,
                 "hedged_flag": None,
                 "hedged_target": None,
+                "equity_size_hint": None,
+                "equity_style_hint": None,
+                "sector_hint": None,
+                "sector_weight": None,
             },
         )
         for key, value in extracted.items():
@@ -586,6 +666,10 @@ def refresh_product_profile(conn: sqlite3.Connection) -> ProfileSyncStats:
             Optional[str],
             Optional[int],
             Optional[str],
+            Optional[str],
+            Optional[str],
+            Optional[str],
+            Optional[float],
             str,
         ]
     ] = []
@@ -634,6 +718,10 @@ def refresh_product_profile(conn: sqlite3.Connection) -> ProfileSyncStats:
         replication_method = _normalize_text_value(metadata.get("replication_method"))
         hedged_flag = _coerce_optional_flag(metadata.get("hedged_flag"))
         hedged_target = _normalize_text_value(metadata.get("hedged_target"))
+        equity_size_hint = _normalize_equity_size_hint(metadata.get("equity_size_hint"))
+        equity_style_hint = _normalize_equity_style_hint(metadata.get("equity_style_hint"))
+        sector_hint = _normalize_sector_hint(metadata.get("sector_hint"))
+        sector_weight = _coerce_optional_float(metadata.get("sector_weight"))
 
         if distribution_policy is not None:
             stats.distributions_synced += 1
@@ -652,6 +740,10 @@ def refresh_product_profile(conn: sqlite3.Connection) -> ProfileSyncStats:
                 replication_method,
                 hedged_flag,
                 hedged_target,
+                equity_size_hint,
+                equity_style_hint,
+                sector_hint,
+                sector_weight,
             )
         ):
             stats.metadata_synced += 1
@@ -670,6 +762,10 @@ def refresh_product_profile(conn: sqlite3.Connection) -> ProfileSyncStats:
                 replication_method,
                 hedged_flag,
                 hedged_target,
+                equity_size_hint,
+                equity_style_hint,
+                sector_hint,
+                sector_weight,
             )
         ):
             profile_upserts.append(
@@ -681,18 +777,22 @@ def refresh_product_profile(conn: sqlite3.Connection) -> ProfileSyncStats:
                     next_ucits_updated_at,
                     ongoing_charges,
                     ongoing_charges_asof,
-                benchmark_name,
-                asset_class_hint,
-                domicile_country,
-                fund_size_value,
-                fund_size_currency,
-                fund_size_asof,
-                fund_size_scope,
-                replication_method,
-                hedged_flag,
-                hedged_target,
-                ts,
-            )
+                    benchmark_name,
+                    asset_class_hint,
+                    domicile_country,
+                    fund_size_value,
+                    fund_size_currency,
+                    fund_size_asof,
+                    fund_size_scope,
+                    replication_method,
+                    hedged_flag,
+                    hedged_target,
+                    equity_size_hint,
+                    equity_style_hint,
+                    sector_hint,
+                    sector_weight,
+                    ts,
+                )
             )
 
     if instrument_updates:
@@ -727,9 +827,13 @@ def refresh_product_profile(conn: sqlite3.Connection) -> ProfileSyncStats:
                 replication_method,
                 hedged_flag,
                 hedged_target,
+                equity_size_hint,
+                equity_style_hint,
+                sector_hint,
+                sector_weight,
                 updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(instrument_id) DO UPDATE SET
                 distribution_policy = COALESCE(excluded.distribution_policy, product_profile.distribution_policy),
                 ucits_flag = COALESCE(excluded.ucits_flag, product_profile.ucits_flag),
@@ -747,6 +851,10 @@ def refresh_product_profile(conn: sqlite3.Connection) -> ProfileSyncStats:
                 replication_method = COALESCE(excluded.replication_method, product_profile.replication_method),
                 hedged_flag = COALESCE(excluded.hedged_flag, product_profile.hedged_flag),
                 hedged_target = COALESCE(excluded.hedged_target, product_profile.hedged_target),
+                equity_size_hint = COALESCE(excluded.equity_size_hint, product_profile.equity_size_hint),
+                equity_style_hint = COALESCE(excluded.equity_style_hint, product_profile.equity_style_hint),
+                sector_hint = COALESCE(excluded.sector_hint, product_profile.sector_hint),
+                sector_weight = COALESCE(excluded.sector_weight, product_profile.sector_weight),
                 updated_at = excluded.updated_at
             """,
             profile_upserts,

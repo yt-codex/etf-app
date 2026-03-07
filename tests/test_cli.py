@@ -54,6 +54,11 @@ from etf_app import cli
             ("db.sqlite", ["spdr", "vaneck"]),
         ),
         (
+            ["backfill-ft-metadata", "--db-path", "db.sqlite", "--limit", "25", "--venue", "XETR", "--sleep-seconds", "0.5"],
+            "run_ft_enrichment",
+            ("db.sqlite", 25, "XETR", 0.5),
+        ),
+        (
             ["serve-api", "--db-path", "db.sqlite", "--host", "0.0.0.0", "--port", "9000", "--refresh-derived-on-start"],
             "run_api",
             ("db.sqlite", "0.0.0.0", 9000, True),

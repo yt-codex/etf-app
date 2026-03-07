@@ -49,6 +49,12 @@ Generate taxonomy-backed strategy recommendations:
 etf-pipeline recommend --db-path stage1_etf.db
 ```
 
+Backfill fund size, equity size/style, and concentrated-sector hints from FT ETF tearsheets:
+
+```powershell
+etf-pipeline backfill-ft-metadata --db-path stage1_etf.db --limit 100
+```
+
 Serve the thin JSON API for browse/filter/recommend UI work:
 
 ```powershell

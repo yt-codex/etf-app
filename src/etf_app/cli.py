@@ -5,6 +5,7 @@ import sqlite3
 from pathlib import Path
 
 from etf_app.api import run_api_server
+from etf_app.ft_enrich import run_ft_metadata_backfill
 from etf_app import listing_hygiene, listing_ingest, universe_refine
 from etf_app.completeness import generate_completeness_report
 from etf_app.issuer_fee_enrich import run_issuer_fee_backfill
@@ -107,6 +108,25 @@ def build_parser() -> argparse.ArgumentParser:
         action="append",
         default=[],
         help="Optional source key filter; repeatable. Supported: spdr, jpmorgan, invesco, vaneck, bnpparibas",
+    )
+
+    ft_metadata = subparsers.add_parser(
+        "backfill-ft-metadata",
+        help="Backfill fund size, style, and sector hints from FT ETF tearsheets",
+    )
+    ft_metadata.add_argument("--db-path", default="stage1_etf.db", help="Path to SQLite DB")
+    ft_metadata.add_argument("--limit", type=int, default=100, help="Maximum instruments to attempt")
+    ft_metadata.add_argument(
+        "--venue",
+        choices=["XLON", "XETR", "ALL"],
+        default="ALL",
+        help="Supported FT venue scope",
+    )
+    ft_metadata.add_argument(
+        "--sleep-seconds",
+        type=float,
+        default=0.0,
+        help="Optional delay between resolved FT fetches",
     )
 
     serve_api = subparsers.add_parser(
@@ -244,6 +264,23 @@ def run_issuer_fee_enrichment(db_path: str, source: list[str]) -> int:
     return 0
 
 
+def run_ft_enrichment(db_path: str, limit: int, venue: str, sleep_seconds: float) -> int:
+    stats = run_ft_metadata_backfill(
+        db_path=db_path,
+        limit=limit,
+        venue=venue,
+        sleep_seconds=sleep_seconds,
+    )
+    print(
+        f"ft metadata backfill: attempted={stats.attempted} resolved={stats.resolved} "
+        f"summary_parsed={stats.summary_parsed} holdings_parsed={stats.holdings_parsed} "
+        f"snapshots_inserted={stats.snapshots_inserted} "
+        f"profile_rows_upserted={stats.profile_rows_upserted} "
+        f"taxonomy_rows_updated={stats.taxonomy_rows_updated}"
+    )
+    return 0
+
+
 def run_issuer_normalization(db_path: str, only_missing_fees: bool) -> int:
     conn = sqlite3.connect(str(Path(db_path)))
     conn.row_factory = sqlite3.Row
@@ -319,6 +356,8 @@ def main(argv: list[str] | None = None) -> int:
         return run_issuer_normalization(args.db_path, args.only_missing_fees)
     if args.command == "backfill-issuer-fees":
         return run_issuer_fee_enrichment(args.db_path, args.source)
+    if args.command == "backfill-ft-metadata":
+        return run_ft_enrichment(args.db_path, args.limit, args.venue, args.sleep_seconds)
     if args.command == "serve-api":
         return run_api(
             args.db_path,

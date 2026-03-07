@@ -162,6 +162,8 @@ PATTERNS = {
     "sector_real_estate": [r"\bREAL ESTATE\b", r"\bPROPERTY\b", r"\bREIT(?:S)?\b", r"\bNAREIT\b", r"\bEPRA\b"],
     "sector_materials": [r"\bMATERIALS\b", r"\bCHEM(?:ICALS?)?\b", r"\bRESOURCE(?:S)?\b"],
     "sector_communication": [r"\bCOMMUNICATION\b", r"\bTELECOM\b", r"\bMEDIA\b"],
+    "sector_consumer_cyclical": [r"\bCONSUMER DISCRETIONARY\b", r"\bCONSUMER CYCLICAL\b"],
+    "sector_consumer_defensive": [r"\bCONSUMER STAPLES\b", r"\bCONSUMER DEFENSIVE\b"],
     "theme_robotics": [r"\bROBOTICS\b"],
     "theme_ai": [r"\bAI\b", r"\bARTIFICIAL INTELLIGENCE\b"],
     "theme_water": [r"\bWATER\b"],
@@ -277,6 +279,7 @@ COMPILED_PATTERNS = {key: _compile_patterns(value) for key, value in PATTERNS.it
 COMPILED_COUNTRY_RULES = [(country, region, _compile_patterns(patterns)) for country, region, patterns in COUNTRY_RULES]
 COMPILED_HEDGED_TARGETS = [(target, _compile_patterns(patterns)) for target, patterns in HEDGED_TARGETS]
 GOLD_EQUITY_PROXY_PATTERNS = _compile_patterns([r"\bMINERS?\b", r"\bMINING\b", r"\bPRODUCERS?\b", r"\bBUGS\b", r"\bROYALT(?:Y|IES)\b"])
+PROFILE_SECTOR_HINT_MIN_WEIGHT = 80.0
 
 
 def _has_any(text: str, patterns: list[re.Pattern[str]]) -> bool:
@@ -288,6 +291,46 @@ def _match_country(text: str) -> tuple[Optional[str], Optional[str]]:
         if _has_any(text, patterns):
             return country, region
     return None, None
+
+
+def _normalize_equity_size_hint(value: str | None) -> Optional[str]:
+    text = str(value or "").strip().lower()
+    if not text:
+        return None
+    if "large" in text or "giant" in text:
+        return "large"
+    if "mid" in text or "medium" in text:
+        return "mid"
+    if "small" in text or "micro" in text:
+        return "small"
+    return text
+
+
+def _normalize_equity_style_hint(value: str | None) -> Optional[str]:
+    text = str(value or "").strip().lower()
+    if not text:
+        return None
+    if "value" in text:
+        return "value"
+    if "growth" in text:
+        return "growth"
+    if "blend" in text or "core" in text:
+        return "blend"
+    return text
+
+
+def _normalize_sector_hint(value: str | None) -> Optional[str]:
+    text = str(value or "").strip().lower().replace(" ", "_")
+    if not text:
+        return None
+    mapping = {
+        "financial_services": "financials",
+        "healthcare": "health_care",
+        "health_care": "health_care",
+        "basic_materials": "materials",
+        "communication_services": "communication",
+    }
+    return mapping.get(text, text)
 
 
 def _normalize_name(name: str | None) -> str:
@@ -456,6 +499,10 @@ def classify_instrument(
     hedged_flag: int | None = None,
     hedged_target: str | None = None,
     domicile_country: str | None = None,
+    equity_size_hint: str | None = None,
+    equity_style_hint: str | None = None,
+    sector_hint: str | None = None,
+    sector_weight: float | None = None,
 ) -> TaxonomyResult:
     original_name = instrument_name or ""
     benchmark_text = benchmark_name or ""
@@ -472,6 +519,14 @@ def classify_instrument(
         evidence.append(f"profile:asset_class_hint={metadata_asset_class}")
     if replication_method:
         evidence.append(f"profile:replication={str(replication_method).lower()}")
+    profile_equity_size = _normalize_equity_size_hint(equity_size_hint)
+    profile_equity_style = _normalize_equity_style_hint(equity_style_hint)
+    profile_sector = _normalize_sector_hint(sector_hint)
+    profile_sector_weight = float(sector_weight) if sector_weight is not None else None
+    if profile_equity_size:
+        evidence.append(f"profile:equity_size={profile_equity_size}")
+    if profile_equity_style:
+        evidence.append(f"profile:equity_style={profile_equity_style}")
 
     gold_keyword_detected = _has_any(source_text, COMPILED_PATTERNS["commodity_gold"])
     gold_flag = 0
@@ -516,21 +571,27 @@ def classify_instrument(
     )
 
     sector: Optional[str] = None
-    for sector_name, key in (
-        ("technology", "sector_technology"),
-        ("health_care", "sector_health_care"),
-        ("financials", "sector_financials"),
-        ("energy", "sector_energy"),
-        ("utilities", "sector_utilities"),
-        ("industrials", "sector_industrials"),
-        ("real_estate", "sector_real_estate"),
-        ("materials", "sector_materials"),
-        ("communication", "sector_communication"),
-    ):
-        if _has_any(analysis_text, COMPILED_PATTERNS[key]):
-            sector = sector_name
-            evidence.append(f"sector:{sector_name}")
-            break
+    if profile_sector and (profile_sector_weight is None or profile_sector_weight >= PROFILE_SECTOR_HINT_MIN_WEIGHT):
+        sector = profile_sector
+        evidence.append(f"profile:sector={profile_sector}")
+    else:
+        for sector_name, key in (
+            ("technology", "sector_technology"),
+            ("health_care", "sector_health_care"),
+            ("financials", "sector_financials"),
+            ("energy", "sector_energy"),
+            ("utilities", "sector_utilities"),
+            ("industrials", "sector_industrials"),
+            ("real_estate", "sector_real_estate"),
+            ("materials", "sector_materials"),
+            ("communication", "sector_communication"),
+            ("consumer_cyclical", "sector_consumer_cyclical"),
+            ("consumer_defensive", "sector_consumer_defensive"),
+        ):
+            if _has_any(analysis_text, COMPILED_PATTERNS[key]):
+                sector = sector_name
+                evidence.append(f"sector:{sector_name}")
+                break
 
     theme: Optional[str] = None
     for theme_name, key in (
@@ -567,14 +628,19 @@ def classify_instrument(
             break
 
     equity_size: Optional[str] = None
-    for size_name, key in (("small", "size_small"), ("mid", "size_mid"), ("large", "size_large")):
-        if _has_any(analysis_text, COMPILED_PATTERNS[key]):
-            equity_size = size_name
-            evidence.append(f"size:{size_name}")
-            break
+    if profile_equity_size:
+        equity_size = profile_equity_size
+    else:
+        for size_name, key in (("small", "size_small"), ("mid", "size_mid"), ("large", "size_large")):
+            if _has_any(analysis_text, COMPILED_PATTERNS[key]):
+                equity_size = size_name
+                evidence.append(f"size:{size_name}")
+                break
 
     equity_style: Optional[str] = None
-    if _has_any(analysis_text, COMPILED_PATTERNS["style_value"]):
+    if profile_equity_style:
+        equity_style = profile_equity_style
+    elif _has_any(analysis_text, COMPILED_PATTERNS["style_value"]):
         equity_style = "value"
         evidence.append("style:value")
     elif _has_any(analysis_text, COMPILED_PATTERNS["style_growth"]):
@@ -797,7 +863,11 @@ def load_universe_rows(conn: sqlite3.Connection) -> list[sqlite3.Row]:
             pp.domicile_country,
             pp.replication_method,
             pp.hedged_flag,
-            pp.hedged_target
+            pp.hedged_target,
+            pp.equity_size_hint,
+            pp.equity_style_hint,
+            pp.sector_hint,
+            pp.sector_weight
         FROM instrument i
         JOIN listing l
           ON l.instrument_id = i.instrument_id
@@ -816,7 +886,11 @@ def load_universe_rows(conn: sqlite3.Connection) -> list[sqlite3.Row]:
             pp.domicile_country,
             pp.replication_method,
             pp.hedged_flag,
-            pp.hedged_target
+            pp.hedged_target,
+            pp.equity_size_hint,
+            pp.equity_style_hint,
+            pp.sector_hint,
+            pp.sector_weight
         ORDER BY i.isin
         """
     ).fetchall()
@@ -837,6 +911,10 @@ def upsert_taxonomy(conn: sqlite3.Connection, rows: list[sqlite3.Row]) -> int:
             hedged_flag=row["hedged_flag"],
             hedged_target=row["hedged_target"],
             domicile_country=row["domicile_country"],
+            equity_size_hint=row["equity_size_hint"],
+            equity_style_hint=row["equity_style_hint"],
+            sector_hint=row["sector_hint"],
+            sector_weight=row["sector_weight"],
         )
         conn.execute(
             """
