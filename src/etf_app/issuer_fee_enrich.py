@@ -18,8 +18,10 @@ from etf_app.kid_ingest import apply_migrations, insert_cost_snapshot, normalize
 class IssuerFeeSource:
     key: str
     issuer_names: tuple[str, ...]
-    source_url: str
+    source_url: Optional[str]
     source_name: str
+    source_url_template: Optional[str] = None
+    request_headers: Optional[dict[str, str]] = None
 
 
 SUPPORTED_SOURCES: tuple[IssuerFeeSource, ...] = (
@@ -40,6 +42,17 @@ SUPPORTED_SOURCES: tuple[IssuerFeeSource, ...] = (
             "etf-product-list-emea.pdf"
         ),
         source_name="jpm_etf_product_list_pdf",
+    ),
+    IssuerFeeSource(
+        key="invesco",
+        issuer_names=("Invesco",),
+        source_url=None,
+        source_name="invesco_factsheet_pdf",
+        source_url_template=(
+            "https://www.invesco.com/content/dam/invesco/emea/en/product-documents/etf/share-class/factsheet/"
+            "{isin_upper}_factsheet_en.pdf"
+        ),
+        request_headers={},
     ),
     IssuerFeeSource(
         key="vaneck",
@@ -87,17 +100,26 @@ def select_missing_fee_targets(conn: sqlite3.Connection, issuer_names: tuple[str
     return conn.execute(sql, tuple(name.upper() for name in issuer_names)).fetchall()
 
 
-def download_pdf(url: str, timeout: int = 30) -> bytes:
-    response = requests.get(
-        url,
-        timeout=timeout,
-        headers={
+def download_pdf(
+    url: str,
+    timeout: int = 30,
+    headers: Optional[dict[str, str]] = None,
+) -> bytes:
+    request_headers = (
+        headers
+        if headers is not None
+        else {
             "User-Agent": (
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                 "AppleWebKit/537.36 (KHTML, like Gecko) "
                 "Chrome/124.0.0.0 Safari/537.36"
             )
-        },
+        }
+    )
+    response = requests.get(
+        url,
+        timeout=timeout,
+        headers=request_headers,
     )
     response.raise_for_status()
     content_type = (response.headers.get("content-type") or "").lower()
@@ -123,6 +145,45 @@ def find_fee_after_isin(text: str, isin: str, window: int = 220) -> tuple[Option
         if 0.0 <= value <= 3.0:
             return value, snippet
     return None, snippet
+
+
+def extract_invesco_factsheet_payload(text: str) -> dict[str, object]:
+    normalized = normalize_space(text)
+
+    def capture(pattern: str) -> Optional[str]:
+        match = re.search(pattern, normalized, flags=re.IGNORECASE)
+        if not match:
+            return None
+        return normalize_space(match.group(1))
+
+    fee_value: Optional[float] = None
+    fee_match = re.search(r"\bOngoing charge\b(?:\s+\d+)?\s+(\d+\.\d+)\s*%", normalized, flags=re.IGNORECASE)
+    if fee_match:
+        fee_value = float(fee_match.group(1))
+
+    benchmark_name = capture(r"\bIndex\s+(.+?)\s+Index currency\b")
+    replication_text = capture(r"\bReplication method\s+(Physical|Synthetic)\b")
+    replication_method = replication_text.lower() if replication_text else None
+    domicile_country = capture(r"\bDomicile\s+(.+?)\s+Dividend treatment\b")
+    dividend_treatment = capture(r"\bDividend treatment\s+(Distributing|Accumulating)\b")
+    hedged_text = capture(r"\bCurrency hedged\s+(Yes|No)\b")
+    hedged_flag = None
+    if hedged_text is not None:
+        hedged_flag = 1 if hedged_text.lower() == "yes" else 0
+    ucits_text = capture(r"\bUCITS compliant\s+(Yes|No)\b")
+    ucits_compliant = None
+    if ucits_text is not None:
+        ucits_compliant = 1 if ucits_text.lower() == "yes" else 0
+
+    return {
+        "ongoing_charges": fee_value,
+        "benchmark_name": benchmark_name,
+        "replication_method": replication_method,
+        "domicile_country": domicile_country,
+        "distribution_policy": dividend_treatment,
+        "hedged_flag": hedged_flag,
+        "ucits_compliant": ucits_compliant,
+    }
 
 
 def apply_fee_map(
@@ -166,6 +227,66 @@ def apply_fee_map(
     return stats
 
 
+def apply_template_fee_source(
+    conn: sqlite3.Connection,
+    *,
+    rows: list[sqlite3.Row],
+    source: IssuerFeeSource,
+    asof_date: str,
+) -> dict[str, int]:
+    if not source.source_url_template:
+        raise ValueError(f"Source {source.key} does not define a template URL")
+    stats = {"attempted": len(rows), "matched": 0, "inserted": 0}
+    for row in rows:
+        instrument_id = int(row["instrument_id"])
+        isin = str(row["isin"] or "")
+        source_url = source.source_url_template.format(isin_upper=isin.upper(), isin_lower=isin.lower())
+        try:
+            pdf_bytes = download_pdf(source_url, headers=source.request_headers)
+        except Exception:
+            continue
+        payload = extract_invesco_factsheet_payload(extract_pdf_text(pdf_bytes))
+        ongoing_charges = payload.get("ongoing_charges")
+        if not isinstance(ongoing_charges, (int, float)):
+            continue
+        stats["matched"] += 1
+        raw_json = {
+            "source": "issuer_fee_enrich",
+            "issuer_source": source.source_name,
+            "source_url": source_url,
+            "matched_isin": isin,
+            "instrument_name": row["instrument_name"],
+            "ongoing_charges": float(ongoing_charges),
+            "profile_metadata": {
+                key: value
+                for key, value in payload.items()
+                if key not in {"ongoing_charges", "distribution_policy", "ucits_compliant"} and value is not None
+            },
+            "distribution_policy": payload.get("distribution_policy"),
+            "ucits_compliant": payload.get("ucits_compliant"),
+        }
+        conn.execute("BEGIN")
+        try:
+            insert_cost_snapshot(
+                conn,
+                instrument_id=instrument_id,
+                asof_date=asof_date,
+                ongoing_charges=float(ongoing_charges),
+                entry_costs=None,
+                exit_costs=None,
+                transaction_costs=None,
+                doc_id=None,
+                quality_flag="ok",
+                raw_json=raw_json,
+            )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        stats["inserted"] += 1
+    return stats
+
+
 def run_issuer_fee_backfill(db_path: str, source_keys: list[str] | None = None) -> dict[str, dict[str, int]]:
     selected_keys = normalize_source_keys(source_keys or [])
     selected_sources = [source for source in SUPPORTED_SOURCES if source.key in selected_keys]
@@ -186,7 +307,15 @@ def run_issuer_fee_backfill(db_path: str, source_keys: list[str] | None = None) 
             if not rows:
                 results[source.key] = {"attempted": 0, "matched": 0, "inserted": 0}
                 continue
-            pdf_bytes = download_pdf(source.source_url)
+            if source.source_url_template:
+                results[source.key] = apply_template_fee_source(
+                    conn,
+                    rows=rows,
+                    source=source,
+                    asof_date=asof_date,
+                )
+                continue
+            pdf_bytes = download_pdf(source.source_url, headers=source.request_headers)
             pdf_text = extract_pdf_text(pdf_bytes)
             conn.execute("BEGIN")
             try:
@@ -210,7 +339,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         "--source",
         action="append",
         default=[],
-        help="Optional source key filter; repeatable. Supported: spdr, jpmorgan, vaneck",
+        help="Optional source key filter; repeatable. Supported: spdr, jpmorgan, invesco, vaneck",
     )
     args = parser.parse_args(argv)
     results = run_issuer_fee_backfill(args.db_path, args.source)

@@ -4,6 +4,7 @@ import sqlite3
 
 from etf_app.issuer_fee_enrich import (
     apply_fee_map,
+    extract_invesco_factsheet_payload,
     find_fee_after_isin,
     normalize_source_keys,
     select_missing_fee_targets,
@@ -43,12 +44,41 @@ def test_find_fee_after_isin_handles_vaneck_product_list_text() -> None:
     assert fee == 0.59
 
 
+def test_extract_invesco_factsheet_payload_extracts_fee_and_metadata() -> None:
+    text = (
+        "As of 31 January 2026 Invesco FTSE All-World UCITS ETF Dist "
+        "Ongoing charge 1 0.15% p.a. "
+        "Currency hedged No "
+        "Index FTSE All-World Index (USD) "
+        "Index currency USD "
+        "Replication method Physical "
+        "UCITS compliant Yes "
+        "Domicile Ireland "
+        "Dividend treatment Distributing "
+        "ISIN code IE0000QLH0G6 "
+    )
+
+    payload = extract_invesco_factsheet_payload(text)
+
+    assert payload["ongoing_charges"] == 0.15
+    assert payload["benchmark_name"] == "FTSE All-World Index (USD)"
+    assert payload["replication_method"] == "physical"
+    assert payload["domicile_country"] == "Ireland"
+    assert payload["distribution_policy"] == "Distributing"
+    assert payload["hedged_flag"] == 0
+    assert payload["ucits_compliant"] == 1
+
+
 def test_normalize_source_keys_defaults_to_all_supported_sources() -> None:
     assert normalize_source_keys([]) == [source.key for source in SUPPORTED_SOURCES]
 
 
 def test_normalize_source_keys_accepts_new_vaneck_source() -> None:
     assert normalize_source_keys(["vaneck", "spdr"]) == ["vaneck", "spdr"]
+
+
+def test_normalize_source_keys_accepts_invesco_source() -> None:
+    assert normalize_source_keys(["invesco", "spdr"]) == ["invesco", "spdr"]
 
 
 def test_apply_fee_map_inserts_latest_fee_snapshot() -> None:
