@@ -19,6 +19,92 @@ from etf_app.api import (
 )
 
 
+UNKNOWN_DISPLAY = "Unknown"
+NOT_APPLICABLE_DISPLAY = "N.A."
+
+ASSET_TYPE_LABELS = {
+    "equity": "Equity",
+    "bond": "Bond",
+    "commodity": "Commodity",
+    "cash": "Cash",
+    "multi": "Multi-asset",
+    "multi_asset": "Multi-asset",
+}
+REGION_LABELS = {
+    "us": "US",
+    "uk": "UK",
+    "em": "Emerging Markets",
+    "global": "Global",
+    "europe": "Europe",
+    "japan": "Japan",
+    "asia": "Asia",
+    "apac": "Asia-Pacific",
+    "china": "China",
+    "switzerland": "Switzerland",
+    "canada": "Canada",
+    "latin_america": "Latin America",
+    "north_america": "North America",
+}
+SIZE_LABELS = {"large": "Large", "mid": "Mid", "small": "Small"}
+STYLE_LABELS = {"value": "Value", "growth": "Growth", "blend": "Blend"}
+REPLICATION_LABELS = {"physical": "Physical", "synthetic": "Synthetic"}
+BOND_TYPE_LABELS = {
+    "government": "Government",
+    "corporate": "Corporate",
+    "aggregate": "Aggregate",
+    "inflation_linked": "Inflation-linked",
+    "high_yield": "High yield",
+    "em_local": "EM local currency",
+    "em_hard_currency": "EM hard currency",
+    "securitized": "Securitized",
+    "floating_rate": "Floating rate",
+}
+DURATION_LABELS = {
+    "ultra_short": "Ultra-short",
+    "short": "Short",
+    "intermediate": "Intermediate",
+    "long": "Long",
+}
+
+EXPLORER_COLUMNS = [
+    "Asset type",
+    "Issuer",
+    "ISIN",
+    "Ticker",
+    "Fund name",
+    "Fund size",
+    "Domicile",
+    "Distribution",
+    "Currency",
+    "TER",
+    "Region",
+    "Size",
+    "Style",
+    "Sector",
+    "Replication",
+    "Bond type",
+    "Duration",
+]
+
+STRATEGY_COLUMNS = [
+    "Bucket",
+    "Asset type",
+    "Issuer",
+    "ISIN",
+    "Ticker",
+    "Fund name",
+    "Distribution",
+    "Currency",
+    "TER",
+    "Region",
+    "Size",
+    "Style",
+    "Sector",
+    "Bond type",
+    "Duration",
+]
+
+
 st.set_page_config(page_title="ETF Atlas", layout="wide", initial_sidebar_state="expanded")
 
 st.markdown(
@@ -26,71 +112,85 @@ st.markdown(
     <style>
     @import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600&family=IBM+Plex+Sans:wght@400;500;600&display=swap');
     :root {
-        --paper: #f4efe6;
-        --paper-soft: #fcf8f1;
-        --panel: rgba(255,255,255,0.78);
-        --ink: #17251f;
-        --muted: #67736f;
-        --line: rgba(23,37,31,0.10);
-        --accent: #b86540;
-        --moss: #294a44;
-        --moss-soft: #dbe8e2;
+        --paper: #f6f1e8;
+        --panel: rgba(255,255,255,0.88);
+        --ink: #15231f;
+        --muted: #64716d;
+        --line: rgba(21,35,31,0.10);
+        --accent: #bd6c46;
+        --moss: #21453f;
     }
     html, body, [class*="css"] { font-family: 'IBM Plex Sans', sans-serif; color: var(--ink); }
     h1, h2, h3 { font-family: 'Fraunces', serif; color: var(--ink); letter-spacing: -0.02em; }
     [data-testid="stAppViewContainer"] {
         background:
-            radial-gradient(circle at top left, rgba(208,189,145,0.28), transparent 24%),
-            radial-gradient(circle at 88% 0%, rgba(70,118,107,0.12), transparent 28%),
-            linear-gradient(180deg, #f4efe6 0%, #f8f4ec 55%, #f1eee8 100%);
+            radial-gradient(circle at top left, rgba(206,187,149,0.25), transparent 22%),
+            radial-gradient(circle at 90% 0%, rgba(58,102,92,0.10), transparent 24%),
+            linear-gradient(180deg, #f6f1e8 0%, #fbf8f2 50%, #f4efe7 100%);
     }
-    [data-testid="stHeader"] { background: rgba(244,239,230,0.74); backdrop-filter: blur(10px); }
-    [data-testid="stSidebar"] { background: linear-gradient(180deg, #ece3d4, #f5f1e8); border-right: 1px solid var(--line); }
+    [data-testid="stHeader"] { background: rgba(246,241,232,0.72); backdrop-filter: blur(12px); }
+    [data-testid="stSidebar"] { background: linear-gradient(180deg, #f0e7db, #f7f3eb); border-right: 1px solid var(--line); }
     [data-testid="stSidebar"] * { color: var(--ink) !important; }
-    .sidebar-note, .section-box, .detail-box, .signal-box, .mini-box {
-        background: var(--panel); border: 1px solid var(--line); border-radius: 22px; box-shadow: 0 16px 50px rgba(23,37,31,0.06);
+    .hero-box, .summary-box, .section-box, .detail-box, .table-shell, .stat-card {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 24px;
+        box-shadow: 0 14px 40px rgba(21,35,31,0.06);
     }
-    .sidebar-note { padding: 0.9rem 1rem; color: var(--muted); font-size: 0.92rem; line-height: 1.45; margin-bottom: 0.9rem; }
-    .eyebrow { font-size: 0.76rem; text-transform: uppercase; letter-spacing: 0.16em; color: #7c8b86; margin-bottom: 0.55rem; font-weight: 600; }
     .hero-box {
-        background: linear-gradient(135deg, rgba(32,70,64,0.98), rgba(64,112,102,0.94));
-        border: 1px solid rgba(223,206,169,0.26);
-        border-radius: 30px;
-        box-shadow: 0 24px 70px rgba(19,44,40,0.18);
-        color: #f8f3ea;
-        padding: 1.55rem 1.65rem;
-        min-height: 235px;
+        padding: 1.5rem 1.65rem;
+        background: linear-gradient(135deg, rgba(31,69,63,0.98), rgba(64,112,102,0.94));
+        color: #f8f4ed;
+        border-color: rgba(222,204,166,0.22);
     }
-    .hero-box .eyebrow { color: rgba(240,231,211,0.70); }
-    .hero-box h1 { color: #f8f3ea; font-size: 2.95rem; line-height: 1.0; margin: 0 0 0.8rem 0; max-width: 15ch; }
-    .hero-box p { color: rgba(248,243,234,0.84); margin: 0; font-size: 1.02rem; line-height: 1.55; max-width: 60ch; }
-    .signal-box, .section-box, .detail-box { padding: 1rem 1.1rem; }
-    .signal-grid, .facts-grid { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 0.75rem; }
-    .signal-tile, .fact-tile { background: rgba(244,239,230,0.86); border: 1px solid var(--line); border-radius: 16px; padding: 0.75rem 0.8rem; }
-    .signal-tile span, .fact-tile span { display:block; font-size:0.75rem; letter-spacing:0.11em; text-transform:uppercase; color:#7a8883; margin-bottom:0.35rem; font-weight:600; }
-    .signal-tile strong, .fact-tile strong { display:block; color:var(--ink); font-size:1.02rem; line-height:1.4; }
-    .metric-grid { display:grid; grid-template-columns: repeat(5, minmax(0,1fr)); gap: 0.9rem; margin: 1.15rem 0 1.3rem 0; }
-    .metric-card, .mini-box { background: var(--panel); border: 1px solid var(--line); border-radius: 20px; padding: 0.95rem 1rem; box-shadow: 0 12px 34px rgba(23,37,31,0.05); }
-    .metric-card span, .mini-box span { display:block; font-size:0.75rem; letter-spacing:0.12em; text-transform:uppercase; color:#7a8883; margin-bottom:0.35rem; font-weight:600; }
-    .metric-card strong, .mini-box strong { display:block; color:var(--ink); font-family:'Fraunces', serif; font-size:1.75rem; line-height:1.05; margin-bottom:0.2rem; }
-    .metric-card em { font-style:normal; color:var(--muted); font-size:0.92rem; }
-    .chip-row { display:flex; flex-wrap:wrap; gap:0.55rem; margin:0.25rem 0 0.9rem 0; }
-    .chip { display:inline-flex; align-items:center; border-radius:999px; background: rgba(41,74,68,0.08); border:1px solid rgba(41,74,68,0.14); color:var(--moss); padding:0.34rem 0.74rem; font-size:0.83rem; font-weight:600; }
-    .chip.accent { background: rgba(184,101,64,0.11); border-color: rgba(184,101,64,0.18); color:#8d4d30; }
-    .detail-meta, .section-copy, .table-copy { color: var(--muted); font-size: 0.95rem; line-height: 1.5; }
-    .badge-row { display:flex; flex-wrap:wrap; gap:0.45rem; margin:0.85rem 0 0.95rem 0; }
-    .badge { display:inline-flex; align-items:center; border-radius:999px; background: var(--moss-soft); color: var(--moss); padding: 0.28rem 0.68rem; font-size:0.8rem; font-weight:600; }
+    .hero-box h1 { color: #f8f4ed; font-size: 2.6rem; line-height: 1.02; margin: 0 0 0.8rem 0; max-width: 14ch; }
+    .hero-box p { color: rgba(248,244,237,0.84); margin: 0; font-size: 1rem; line-height: 1.56; max-width: 58ch; }
+    .eyebrow { font-size: 0.76rem; text-transform: uppercase; letter-spacing: 0.15em; color: #7a8883; margin-bottom: 0.55rem; font-weight: 600; }
+    .hero-box .eyebrow { color: rgba(248,244,237,0.66); }
+    .summary-box, .section-box, .detail-box { padding: 1rem 1.1rem; }
+    .section-copy, .detail-copy, .table-copy { color: var(--muted); font-size: 0.95rem; line-height: 1.52; margin: 0; }
+    .metric-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 0.85rem; margin: 1.05rem 0 1.2rem 0; }
+    .stat-card { padding: 0.95rem 1rem; }
+    .stat-card span { display: block; font-size: 0.75rem; letter-spacing: 0.12em; text-transform: uppercase; color: #788682; margin-bottom: 0.35rem; font-weight: 600; }
+    .stat-card strong { display: block; color: var(--ink); font-family: 'Fraunces', serif; font-size: 1.6rem; line-height: 1.05; margin-bottom: 0.2rem; }
+    .stat-card em { display: block; font-style: normal; color: var(--muted); font-size: 0.9rem; }
+    .chip-row { display: flex; flex-wrap: wrap; gap: 0.5rem; margin: 0.35rem 0 0.15rem 0; }
+    .chip { display: inline-flex; align-items: center; border-radius: 999px; padding: 0.34rem 0.74rem; font-size: 0.82rem; font-weight: 600; background: rgba(33,69,63,0.08); border: 1px solid rgba(33,69,63,0.14); color: var(--moss); }
+    .chip.accent { background: rgba(189,108,70,0.12); border-color: rgba(189,108,70,0.18); color: #955334; }
+    .detail-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.7rem; margin-top: 0.95rem; }
+    .detail-tile { background: rgba(246,241,232,0.86); border: 1px solid var(--line); border-radius: 16px; padding: 0.72rem 0.82rem; }
+    .detail-tile span { display: block; font-size: 0.74rem; letter-spacing: 0.1em; text-transform: uppercase; color: #7c8a85; margin-bottom: 0.35rem; font-weight: 600; }
+    .detail-tile strong { display: block; color: var(--ink); font-size: 1rem; line-height: 1.42; }
+    .detail-meta { color: var(--muted); font-size: 0.92rem; line-height: 1.5; margin-top: 0.15rem; }
+    .table-shell { overflow: hidden; }
+    .table-scroll { overflow: auto; }
+    .browser-table, .strategy-table { width: 100%; border-collapse: collapse; border-spacing: 0; }
+    .browser-table { min-width: 1600px; }
+    .strategy-table { min-width: 1320px; }
+    .browser-table thead th, .strategy-table thead th {
+        position: sticky; top: 0; z-index: 2; background: #eef2ec; border-bottom: 1px solid var(--line);
+        color: #67746f; font-size: 0.72rem; letter-spacing: 0.1em; text-transform: uppercase;
+        text-align: left; padding: 0.82rem 0.78rem; white-space: nowrap;
+    }
+    .browser-table tbody td, .strategy-table tbody td {
+        padding: 0.78rem; border-bottom: 1px solid rgba(21,35,31,0.08); font-size: 0.91rem;
+        color: var(--ink); background: rgba(255,255,255,0.5); vertical-align: top;
+    }
+    .browser-table tbody tr:nth-child(even) td, .strategy-table tbody tr:nth-child(even) td { background: rgba(244,239,231,0.78); }
+    .browser-table tbody tr:hover td, .strategy-table tbody tr:hover td { background: rgba(33,69,63,0.08); }
+    .table-note { display: flex; justify-content: space-between; align-items: center; gap: 1rem; margin: 0.2rem 0 0.9rem 0; color: var(--muted); font-size: 0.92rem; }
+    .stTabs [data-baseweb="tab-list"] { gap: 0.45rem; background: rgba(255,252,248,0.72); border: 1px solid var(--line); border-radius: 999px; padding: 0.32rem; width: fit-content; }
+    .stTabs [data-baseweb="tab"] { border-radius: 999px; padding: 0.58rem 1rem; color: var(--muted); font-weight: 600; height: auto; }
+    .stTabs [aria-selected="true"] { background: var(--moss); color: #f8f4ed !important; }
     div[data-baseweb="select"] > div, div[data-baseweb="base-input"] > div, [data-testid="stNumberInput"] div[data-baseweb="input"] > div {
-        background: rgba(255,255,255,0.88) !important; border:1px solid var(--line) !important; border-radius:15px !important; box-shadow:none !important;
+        background: rgba(255,255,255,0.88) !important; border: 1px solid var(--line) !important; border-radius: 15px !important; box-shadow: none !important;
     }
-    div[data-baseweb="select"] *, div[data-baseweb="base-input"] input, [data-testid="stNumberInput"] input { color: var(--ink) !important; }
-    [data-testid="stDataFrame"], [data-testid="stJson"], [data-testid="stExpander"] { border-radius: 18px; overflow:hidden; border:1px solid var(--line); box-shadow: 0 12px 34px rgba(23,37,31,0.05); }
-    .stTabs [data-baseweb="tab-list"] { gap:0.45rem; background: rgba(255,252,248,0.72); border:1px solid var(--line); border-radius:999px; padding:0.32rem; width:fit-content; }
-    .stTabs [data-baseweb="tab"] { border-radius:999px; padding:0.6rem 1rem; color:var(--muted); font-weight:600; height:auto; }
-    .stTabs [aria-selected="true"] { background: var(--moss); color:#f8f3ea !important; }
-    [data-testid="stMetric"] { background: var(--panel); border:1px solid var(--line); border-radius:18px; box-shadow: 0 10px 30px rgba(23,37,31,0.05); }
-    [data-testid="stMetric"] label, [data-testid="stMetric"] [data-testid="stMetricValue"], [data-testid="stMetric"] [data-testid="stMetricDelta"] { color: var(--ink) !important; }
-    @media (max-width: 1200px) { .metric-grid { grid-template-columns: repeat(2, minmax(0,1fr)); } .signal-grid, .facts-grid { grid-template-columns:1fr; } .hero-box h1 { font-size:2.4rem; } }
+    [data-testid="stButton"] button { border-radius: 14px; border: 1px solid var(--line); background: rgba(255,255,255,0.9); color: var(--ink); box-shadow: none; }
+    @media (max-width: 1280px) {
+        .metric-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+        .detail-grid { grid-template-columns: 1fr; }
+        .hero-box h1 { font-size: 2.25rem; }
+    }
     </style>
     """,
     unsafe_allow_html=True,
@@ -103,8 +203,7 @@ def _db_path() -> str:
         secret_path = st.secrets.get("db_path")
     except Exception:
         secret_path = None
-    raw = secret_path or os.getenv("ETF_APP_DB_PATH", "stage1_etf.db")
-    return str(Path(raw))
+    return str(Path(secret_path or os.getenv("ETF_APP_DB_PATH", "stage1_etf.db")))
 
 
 def _with_conn(sqlite_path: str, fn, *args, **kwargs):
@@ -165,7 +264,114 @@ def load_completeness_payload(db_path: str, venue: str) -> dict[str, object]:
 
 
 def _escape(value: object) -> str:
-    return html.escape(str(value if value not in (None, "") else "Unknown"))
+    return html.escape(str(value))
+
+
+def _normalized_text(value: object) -> Optional[str]:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text or text.lower() in {"none", "null", "nan"}:
+        return None
+    return text
+
+
+def _normalized_known_text(value: object) -> Optional[str]:
+    text = _normalized_text(value)
+    if text is None or text.lower() == "unknown":
+        return None
+    return text
+
+
+def _token_key(value: object) -> Optional[str]:
+    text = _normalized_known_text(value)
+    if text is None:
+        return None
+    return text.lower().replace("-", "_").replace(" ", "_")
+
+
+def _pretty_label(value: object, mapping: Optional[dict[str, str]] = None) -> Optional[str]:
+    key = _token_key(value)
+    if key is None:
+        return None
+    if mapping and key in mapping:
+        return mapping[key]
+    text = _normalized_known_text(value)
+    if text is None:
+        return None
+    if text.isupper() and len(text) <= 6:
+        return text
+    return text.replace("_", " ").title()
+
+
+def _format_percentage(value: object) -> Optional[str]:
+    text = _normalized_text(value)
+    if text is None:
+        return None
+    try:
+        return f"{float(text):.2f}%"
+    except ValueError:
+        return None
+
+
+def _format_fund_size(value: object, currency: object) -> Optional[str]:
+    if value is None:
+        return None
+    try:
+        amount = float(value)
+    except (TypeError, ValueError):
+        return None
+    abs_amount = abs(amount)
+    if abs_amount >= 1_000_000_000:
+        scaled, suffix = amount / 1_000_000_000, "bn"
+    elif abs_amount >= 1_000_000:
+        scaled, suffix = amount / 1_000_000, "m"
+    elif abs_amount >= 1_000:
+        scaled, suffix = amount / 1_000, "k"
+    else:
+        scaled, suffix = amount, ""
+    number = f"{scaled:.2f}".rstrip("0").rstrip(".") if suffix else f"{scaled:.0f}"
+    currency_text = _normalized_known_text(currency)
+    return f"{currency_text.upper()} {number}{suffix}".strip() if currency_text else f"{number}{suffix}"
+
+
+def _format_distribution(value: object) -> Optional[str]:
+    text = _normalized_known_text(value)
+    if text is None:
+        return None
+    upper = text.upper()
+    if "ACCUM" in upper or "CAPITAL" in upper:
+        return "Accumulating"
+    if "DISTR" in upper or upper in {"DIST", "DIS"}:
+        return "Distributing"
+    if "NO INCOME" in upper:
+        return "No income"
+    return text
+
+
+def _format_yes_no_unknown(value: object) -> str:
+    if value in (1, True, "1", "true", "True"):
+        return "Yes"
+    if value in (0, False, "0", "false", "False"):
+        return "No"
+    return UNKNOWN_DISPLAY
+
+
+def _display_unknown_or_na(value: Optional[str], *, applicable: bool = True) -> str:
+    if not applicable:
+        return NOT_APPLICABLE_DISPLAY
+    return value if value not in (None, "", "unknown", "Unknown") else UNKNOWN_DISPLAY
+
+
+def _asset_key(item: dict[str, object]) -> Optional[str]:
+    return _token_key(item.get("asset_class"))
+
+
+def _asset_label(item: dict[str, object]) -> str:
+    asset_key = _asset_key(item)
+    if asset_key is None:
+        return UNKNOWN_DISPLAY
+    return ASSET_TYPE_LABELS.get(asset_key, asset_key.replace("_", " ").title())
 
 
 def _selected_filter(value: str, placeholder: str) -> Optional[str]:
@@ -177,6 +383,107 @@ def _selectbox_options(rows: list[dict[str, object]], label: str) -> list[str]:
     return [f"Any {label}"] + values
 
 
+def _toggle_choice(label: str, options: list[str], *, default: str, key: str) -> str:
+    if default not in options:
+        default = options[0]
+    segmented = getattr(st, "segmented_control", None)
+    if callable(segmented):
+        selected = segmented(label, options=options, default=default, selection_mode="single", key=key)
+        return str(selected or default)
+    return str(st.radio(label, options, index=options.index(default), horizontal=True, key=key))
+
+
+def _region_label(item: dict[str, object]) -> str:
+    asset_key = _asset_key(item)
+    applicable = asset_key not in {"commodity", "cash"}
+    return _display_unknown_or_na(_pretty_label(item.get("geography_region"), REGION_LABELS), applicable=applicable)
+
+
+def _equity_size_label(item: dict[str, object]) -> str:
+    return _display_unknown_or_na(_pretty_label(item.get("equity_size"), SIZE_LABELS), applicable=_asset_key(item) == "equity")
+
+
+def _equity_style_label(item: dict[str, object]) -> str:
+    return _display_unknown_or_na(_pretty_label(item.get("equity_style"), STYLE_LABELS), applicable=_asset_key(item) == "equity")
+
+
+def _sector_label(item: dict[str, object]) -> str:
+    return _display_unknown_or_na(_pretty_label(item.get("sector")), applicable=_asset_key(item) == "equity")
+
+
+def _replication_label(value: object) -> str:
+    return _display_unknown_or_na(_pretty_label(value, REPLICATION_LABELS))
+
+
+def _bond_type_label(item: dict[str, object]) -> str:
+    return _display_unknown_or_na(_pretty_label(item.get("bond_type"), BOND_TYPE_LABELS), applicable=_asset_key(item) == "bond")
+
+
+def _duration_label(item: dict[str, object]) -> str:
+    return _display_unknown_or_na(_pretty_label(item.get("duration_bucket"), DURATION_LABELS), applicable=_asset_key(item) == "bond")
+
+
+def _fund_table(items: list[dict[str, object]]) -> pd.DataFrame:
+    rows: list[dict[str, str]] = []
+    for item in items:
+        rows.append(
+            {
+                "Asset type": _asset_label(item),
+                "Issuer": _display_unknown_or_na(_normalized_known_text(item.get("issuer_name"))),
+                "ISIN": _display_unknown_or_na(_normalized_known_text(item.get("isin"))),
+                "Ticker": _display_unknown_or_na(_normalized_known_text(item.get("ticker"))),
+                "Fund name": _display_unknown_or_na(_normalized_known_text(item.get("instrument_name"))),
+                "Fund size": _display_unknown_or_na(_format_fund_size(item.get("fund_size_value"), item.get("fund_size_currency"))),
+                "Domicile": _display_unknown_or_na(_pretty_label(item.get("domicile_country"))),
+                "Distribution": _display_unknown_or_na(_format_distribution(item.get("distribution_policy"))),
+                "Currency": _display_unknown_or_na(_normalized_known_text(item.get("currency"))),
+                "TER": _display_unknown_or_na(_format_percentage(item.get("ongoing_charges"))),
+                "Region": _region_label(item),
+                "Size": _equity_size_label(item),
+                "Style": _equity_style_label(item),
+                "Sector": _sector_label(item),
+                "Replication": _replication_label(item.get("replication_method")),
+                "Bond type": _bond_type_label(item),
+                "Duration": _duration_label(item),
+            }
+        )
+    return pd.DataFrame(rows, columns=EXPLORER_COLUMNS)
+
+
+def _strategy_table(rows: list[dict[str, object]]) -> pd.DataFrame:
+    formatted_rows: list[dict[str, str]] = []
+    for row in rows:
+        item = {
+            "asset_class": row.get("asset_class"),
+            "geography_region": row.get("geography_region"),
+            "equity_size": row.get("equity_size"),
+            "equity_style": row.get("equity_style"),
+            "sector": row.get("sector"),
+            "bond_type": row.get("bond_type"),
+            "duration_bucket": row.get("duration_bucket"),
+        }
+        formatted_rows.append(
+            {
+                "Bucket": _display_unknown_or_na(_pretty_label(row.get("bucket_name"))),
+                "Asset type": _asset_label(item),
+                "Issuer": _display_unknown_or_na(_normalized_known_text(row.get("issuer_normalized"))),
+                "ISIN": _display_unknown_or_na(_normalized_known_text(row.get("ISIN"))),
+                "Ticker": _display_unknown_or_na(_normalized_known_text(row.get("ticker"))),
+                "Fund name": _display_unknown_or_na(_normalized_known_text(row.get("instrument_name"))),
+                "Distribution": _display_unknown_or_na(_format_distribution(row.get("distribution_policy"))),
+                "Currency": _display_unknown_or_na(_normalized_known_text(row.get("currency"))),
+                "TER": _display_unknown_or_na(_format_percentage(row.get("ongoing_charges"))),
+                "Region": _region_label(item),
+                "Size": _equity_size_label(item),
+                "Style": _equity_style_label(item),
+                "Sector": _sector_label(item),
+                "Bond type": _bond_type_label(item),
+                "Duration": _duration_label(item),
+            }
+        )
+    return pd.DataFrame(formatted_rows, columns=STRATEGY_COLUMNS)
+
+
 def _coverage_metric(field: dict[str, object]) -> str:
     return f"{field['known']}/{field['total']}"
 
@@ -185,7 +492,7 @@ def _render_metric_grid(cards: list[dict[str, str]]) -> None:
     out = ["<div class='metric-grid'>"]
     for card in cards:
         out.append(
-            f"<div class='metric-card'><span>{_escape(card['label'])}</span><strong>{_escape(card['value'])}</strong><em>{_escape(card['meta'])}</em></div>"
+            f"<div class='stat-card'><span>{_escape(card['label'])}</span><strong>{_escape(card['value'])}</strong><em>{_escape(card['meta'])}</em></div>"
         )
     out.append("</div>")
     st.markdown("".join(out), unsafe_allow_html=True)
@@ -194,66 +501,66 @@ def _render_metric_grid(cards: list[dict[str, str]]) -> None:
 def _render_chip_row(values: list[str], *, accent_first: bool = False) -> None:
     if not values:
         return
-    chips = []
+    chips: list[str] = []
     for idx, value in enumerate(values):
-        cls = "chip accent" if accent_first and idx == 0 else "chip"
-        chips.append(f"<span class='{cls}'>{_escape(value)}</span>")
+        css_class = "chip accent" if accent_first and idx == 0 else "chip"
+        chips.append(f"<span class='{css_class}'>{_escape(value)}</span>")
     st.markdown(f"<div class='chip-row'>{''.join(chips)}</div>", unsafe_allow_html=True)
 
 
-def _fund_table(items: list[dict[str, object]]) -> pd.DataFrame:
-    if not items:
-        return pd.DataFrame(columns=["ISIN", "Fund", "Issuer", "Venue", "Ticker", "CCY", "TER", "Asset", "Region", "Size", "Style", "Factor", "Sector", "Theme", "Bond Type", "Duration"])
-    df = pd.DataFrame(items)[[
-        "isin", "instrument_name", "issuer_name", "primary_venue", "ticker", "currency", "ongoing_charges",
-        "asset_class", "geography_region", "equity_size", "equity_style", "factor", "sector", "theme",
-        "bond_type", "duration_bucket",
-    ]].copy()
-    df.columns = ["ISIN", "Fund", "Issuer", "Venue", "Ticker", "CCY", "TER", "Asset", "Region", "Size", "Style", "Factor", "Sector", "Theme", "Bond Type", "Duration"]
-    return df.fillna("")
-
-
-def _strategy_rows_table(rows: list[dict[str, object]]) -> pd.DataFrame:
-    if not rows:
-        return pd.DataFrame(columns=["Bucket", "ISIN", "Fund"])
-    df = pd.DataFrame(rows)[[
-        "bucket_name", "ISIN", "instrument_name", "issuer_normalized", "primary_venue", "currency",
-        "ongoing_charges", "asset_class", "geography_region", "equity_size", "equity_style", "factor",
-        "bond_type", "duration_bucket",
-    ]].copy()
-    df.columns = ["Bucket", "ISIN", "Fund", "Issuer", "Venue", "CCY", "TER", "Asset", "Region", "Size", "Style", "Factor", "Bond Type", "Duration"]
-    return df.fillna("")
+def _render_static_table(df: pd.DataFrame, *, table_class: str, height: int) -> None:
+    table_html = df.to_html(index=False, classes=table_class, border=0, escape=True)
+    st.markdown(
+        f"<div class='table-shell'><div class='table-scroll' style='max-height:{height}px'>{table_html}</div></div>",
+        unsafe_allow_html=True,
+    )
 
 
 def _render_fund_detail(detail: dict[str, object]) -> None:
-    badges = [
-        detail["asset_class"], detail.get("geography_region"), detail.get("equity_size"), detail.get("equity_style"),
-        detail.get("factor"), detail.get("sector"), detail.get("theme"), detail.get("bond_type"), detail.get("duration_bucket"),
-    ]
-    badge_html = "".join(
-        f"<span class='badge'>{_escape(value)}</span>" for value in badges if value not in (None, "", "unknown")
+    item = detail
+    title = _display_unknown_or_na(_normalized_known_text(detail.get("instrument_name")))
+    subtitle = " | ".join(
+        [
+            _display_unknown_or_na(_normalized_known_text(detail.get("issuer_name"))),
+            _display_unknown_or_na(_normalized_known_text(detail.get("isin"))),
+            _display_unknown_or_na(_normalized_known_text(detail.get("primary_venue"))),
+        ]
     )
-    facts = [
-        ("Trading Currency", detail.get("currency")),
-        ("Ongoing Charges", detail.get("ongoing_charges")),
-        ("Distribution", detail.get("distribution_policy")),
-        ("Benchmark", detail.get("benchmark_name")),
-        ("Domicile", detail.get("domicile_country")),
-        ("Replication", detail.get("replication_method")),
-        ("Hedged", detail.get("hedged_flag")),
-        ("Hedge Target", detail.get("hedged_target")),
+    chips = [
+        _asset_label(item),
+        _region_label(item),
+        _display_unknown_or_na(_pretty_label(detail.get("domicile_country"))),
+        _display_unknown_or_na(_format_distribution(detail.get("distribution_policy"))),
     ]
-    fact_html = "".join(
-        f"<div class='fact-tile'><span>{_escape(label)}</span><strong>{_escape(value)}</strong></div>" for label, value in facts
+    tiles = [
+        ("Ticker", _display_unknown_or_na(_normalized_known_text(detail.get("ticker")))),
+        ("Fund size", _display_unknown_or_na(_format_fund_size(detail.get("fund_size_value"), detail.get("fund_size_currency")))),
+        ("Fund size as of", _display_unknown_or_na(_normalized_known_text(detail.get("fund_size_asof")))),
+        ("Trading currency", _display_unknown_or_na(_normalized_known_text(detail.get("currency")))),
+        ("TER", _display_unknown_or_na(_format_percentage(detail.get("ongoing_charges")))),
+        ("Benchmark", _display_unknown_or_na(_normalized_known_text(detail.get("benchmark_name")))),
+        ("Size", _equity_size_label(item)),
+        ("Style", _equity_style_label(item)),
+        ("Sector", _sector_label(item)),
+        ("Replication", _replication_label(detail.get("replication_method"))),
+        ("Bond type", _bond_type_label(item)),
+        ("Duration", _duration_label(item)),
+        ("Hedged", _format_yes_no_unknown(detail.get("hedged_flag"))),
+        ("Hedge target", _display_unknown_or_na(_pretty_label(detail.get("hedged_target")))),
+    ]
+    chip_html = "".join(f"<span class='chip'>{_escape(value)}</span>" for value in chips)
+    tile_html = "".join(
+        f"<div class='detail-tile'><span>{_escape(label)}</span><strong>{_escape(value)}</strong></div>"
+        for label, value in tiles
     )
     st.markdown(
         f"""
         <div class="detail-box">
             <div class="eyebrow">Selected fund</div>
-            <h3>{_escape(detail['instrument_name'])}</h3>
-            <div class="detail-meta">{_escape(detail['isin'])} | {_escape(detail['issuer_name'])} | {_escape(detail['primary_venue'])} {_escape(detail.get('ticker') or '')}</div>
-            <div class="badge-row">{badge_html}</div>
-            <div class="facts-grid">{fact_html}</div>
+            <h3>{_escape(title)}</h3>
+            <p class="detail-meta">{_escape(subtitle)}</p>
+            <div class="chip-row">{chip_html}</div>
+            <div class="detail-grid">{tile_html}</div>
         </div>
         """,
         unsafe_allow_html=True,
@@ -277,31 +584,25 @@ taxonomy = completeness["taxonomy"]
 strict_filters = completeness["strategy_readiness"]["strict_hard_filters"]
 fee_gaps = completeness["fee_gaps"]["missing_fees_top_issuers"]
 
-hero_left, hero_right = st.columns([1.7, 1.0], gap="large")
+hero_left, hero_right = st.columns([1.55, 1.0], gap="large")
 with hero_left:
     st.markdown(
         """
         <div class="hero-box">
-            <div class="eyebrow">Singapore UCITS ETF Atlas</div>
-            <h1>A cleaner command deck for browsing the ETF universe.</h1>
-            <p>Use the explorer to slice the normalized UCITS database, inspect fund labels in context, and sanity-check the predefined strategy engine before this turns into a user-facing product.</p>
+            <div class="eyebrow">Singapore UCITS ETF Explorer</div>
+            <h1>Browse funds like a client would, not like a data engineer.</h1>
+            <p>Filter the UCITS universe, compare core fund characteristics side by side, and review predefined portfolio strategies without exposing the raw mechanics of the backend pipeline.</p>
         </div>
         """,
         unsafe_allow_html=True,
     )
 with hero_right:
     st.markdown(
-        f"""
-        <div class="signal-box">
-            <div class="eyebrow">Live baseline</div>
-            <h3 style="margin:0 0 0.5rem 0;">{strict_filters['kept']} strict-ready funds</h3>
-            <p class="section-copy">The database is past the coarse cleanup stage. The current bottleneck is label quality, not raw structure.</p>
-            <div class="signal-grid">
-                <div class="signal-tile"><span>Fee coverage</span><strong>{profile_fields['ongoing_charges']['pct']:.2f}%</strong></div>
-                <div class="signal-tile"><span>Equity geography</span><strong>{taxonomy['equity']['geography_known']['pct']:.2f}%</strong></div>
-                <div class="signal-tile"><span>Bond duration</span><strong>{taxonomy['bond']['duration_bucket_known']['pct']:.2f}%</strong></div>
-                <div class="signal-tile"><span>Database</span><strong>{_escape(Path(db_path).name)}</strong></div>
-            </div>
+        """
+        <div class="summary-box">
+            <div class="eyebrow">What changed</div>
+            <h3>Cleaner table, clearer labels</h3>
+            <p class="section-copy">The main explorer now uses a fixed client-facing schema, explicit missing-value rules, and one strategy selector at a time. The coverage view stays available, but it no longer dominates the browsing experience.</p>
         </div>
         """,
         unsafe_allow_html=True,
@@ -309,19 +610,18 @@ with hero_right:
 
 _render_metric_grid(
     [
-        {"label": "Universe", "value": f"{overview['total_instruments']}", "meta": "MVP instruments currently in scope"},
-        {"label": "Fees", "value": _coverage_metric(profile_fields["ongoing_charges"]), "meta": f"{profile_fields['ongoing_charges']['pct']:.2f}% TER coverage"},
-        {"label": "Benchmarks", "value": _coverage_metric(profile_fields["benchmark_name"]), "meta": f"{profile_fields['benchmark_name']['pct']:.2f}% benchmark labels"},
-        {"label": "Equity Geography", "value": _coverage_metric(taxonomy["equity"]["geography_known"]), "meta": f"{taxonomy['equity']['geography_known']['pct']:.2f}% classified"},
-        {"label": "Bond Duration", "value": _coverage_metric(taxonomy["bond"]["duration_bucket_known"]), "meta": f"{taxonomy['bond']['duration_bucket_known']['pct']:.2f}% bucketed"},
+        {"label": "Universe", "value": f"{overview['total_instruments']}", "meta": "UCITS ETFs currently in scope"},
+        {"label": "Domicile", "value": _coverage_metric(profile_fields["domicile_country"]), "meta": f"{profile_fields['domicile_country']['pct']:.2f}% available"},
+        {"label": "Fund size", "value": _coverage_metric(profile_fields["fund_size_value"]), "meta": f"{profile_fields['fund_size_value']['pct']:.2f}% available"},
+        {"label": "Strict-ready", "value": f"{strict_filters['kept']}", "meta": "Funds surviving the hard filters"},
     ]
 )
 
-st.sidebar.markdown("## Filter Rail")
+st.sidebar.markdown("## Explore funds")
 st.sidebar.markdown(
     """
-    <div class="sidebar-note">
-        Keep the left rail for coarse filtering. The main panel should read like an analyst workbench, not a default admin page.
+    <div class="summary-box" style="padding:0.9rem 1rem;">
+        <p class="section-copy">`N.A.` means the field does not apply to that fund type. `Unknown` means it should exist but has not been populated yet.</p>
     </div>
     """,
     unsafe_allow_html=True,
@@ -329,19 +629,17 @@ st.sidebar.markdown(
 
 search = st.sidebar.text_input("Search", placeholder="ISIN, fund name, ticker, issuer, benchmark")
 venue = st.sidebar.selectbox("Venue", ["Any venue"] + [str(row["value"]) for row in filters_payload["venue"]])
-asset_class = st.sidebar.selectbox("Asset class", _selectbox_options(filters_payload["asset_class"], "asset class"))
+asset_class = st.sidebar.selectbox("Asset type", _selectbox_options(filters_payload["asset_class"], "asset type"))
 geography_region = st.sidebar.selectbox("Region", _selectbox_options(filters_payload["geography_region"], "region"))
-factor = st.sidebar.selectbox("Factor", _selectbox_options(filters_payload["factor"], "factor"))
-theme = st.sidebar.selectbox("Theme", _selectbox_options(filters_payload["theme"], "theme"))
+equity_size = st.sidebar.selectbox("Size", _selectbox_options(filters_payload["equity_size"], "size"))
+equity_style = st.sidebar.selectbox("Style", _selectbox_options(filters_payload["equity_style"], "style"))
+sector = st.sidebar.selectbox("Sector", _selectbox_options(filters_payload["sector"], "sector"))
 bond_type = st.sidebar.selectbox("Bond type", _selectbox_options(filters_payload["bond_type"], "bond type"))
-currency = st.sidebar.selectbox("Trading currency", _selectbox_options(filters_payload["currency"], "currency"))
+currency = st.sidebar.selectbox("Currency", _selectbox_options(filters_payload["currency"], "currency"))
 distribution = st.sidebar.selectbox("Distribution", _selectbox_options(filters_payload["distribution_policy"], "distribution"))
-issuer = st.sidebar.selectbox("Top issuer", _selectbox_options(filters_payload["issuer_top"], "issuer"))
+issuer = st.sidebar.selectbox("Issuer", _selectbox_options(filters_payload["issuer_top"], "issuer"))
 hedged = st.sidebar.selectbox("Hedged", ["Any hedge state", "Yes", "No"])
-sort_options = [("name", "Fund name"), ("fee", "TER"), ("issuer", "Issuer"), ("isin", "ISIN"), ("venue", "Venue")]
-sort = st.sidebar.selectbox("Sort", sort_options, format_func=lambda item: item[1])
-sort_direction = st.sidebar.radio("Direction", ["asc", "desc"], horizontal=True)
-page_size = st.sidebar.slider("Rows per page", min_value=25, max_value=100, value=50, step=25)
+page_size = st.sidebar.selectbox("Rows per page", [25, 50, 100], index=1)
 
 browse_tab, strategies_tab, coverage_tab = st.tabs(["Explorer", "Strategies", "Coverage"])
 
@@ -349,25 +647,35 @@ with browse_tab:
     st.markdown(
         """
         <div class="section-box">
-            <div class="eyebrow">Explorer</div>
-            <h3 style="margin:0 0 0.35rem 0;">Move from universe filtering to fund inspection.</h3>
-            <p class="section-copy">The table is for breadth. The right-hand panel is where you decide whether the labels actually make sense.</p>
+            <div class="eyebrow">Fund explorer</div>
+            <h3>Core fund facts in one clean table.</h3>
+            <p class="section-copy">The main view keeps only client-facing ETF attributes. Static rendering removes the built-in grid menus, so sorting stays explicit and the table reads like a comparison sheet rather than an admin console.</p>
         </div>
         """,
         unsafe_allow_html=True,
     )
 
-    fund_params = {"limit": str(page_size), "offset": "0", "sort": sort[0], "direction": sort_direction}
+    sort_map = {"Fund name": "name", "Issuer": "issuer", "TER": "fee", "Asset type": "asset_class", "ISIN": "isin"}
+    sort_col, direction_col = st.columns([1.25, 0.75], gap="large")
+    with sort_col:
+        sort_label = _toggle_choice("Sort by", list(sort_map.keys()), default="Fund name", key="browse_sort_field")
+    with direction_col:
+        direction_label = _toggle_choice("Order", ["Ascending", "Descending"], default="Ascending", key="browse_sort_direction")
+    sort_direction = "asc" if direction_label == "Ascending" else "desc"
+
+    fund_params = {"limit": str(page_size), "sort": sort_map[sort_label], "direction": sort_direction}
     if search:
         fund_params["q"] = search
-    if selected := _selected_filter(asset_class, "Any asset class"):
+    if selected := _selected_filter(asset_class, "Any asset type"):
         fund_params["asset_class"] = selected
     if selected := _selected_filter(geography_region, "Any region"):
         fund_params["geography_region"] = selected
-    if selected := _selected_filter(factor, "Any factor"):
-        fund_params["factor"] = selected
-    if selected := _selected_filter(theme, "Any theme"):
-        fund_params["theme"] = selected
+    if selected := _selected_filter(equity_size, "Any size"):
+        fund_params["equity_size"] = selected
+    if selected := _selected_filter(equity_style, "Any style"):
+        fund_params["equity_style"] = selected
+    if selected := _selected_filter(sector, "Any sector"):
+        fund_params["sector"] = selected
     if selected := _selected_filter(bond_type, "Any bond type"):
         fund_params["bond_type"] = selected
     if selected := _selected_filter(currency, "Any currency"):
@@ -383,17 +691,19 @@ with browse_tab:
     elif hedged == "No":
         fund_params["hedged"] = "false"
 
-    active_filters = []
+    active_filters: list[str] = []
     if venue != "Any venue":
         active_filters.append(f"Venue: {venue}")
     for key, label in (
-        ("asset_class", "Asset"),
+        ("asset_class", "Asset type"),
         ("geography_region", "Region"),
-        ("factor", "Factor"),
-        ("theme", "Theme"),
-        ("bond_type", "Bond"),
+        ("equity_size", "Size"),
+        ("equity_style", "Style"),
+        ("sector", "Sector"),
+        ("bond_type", "Bond type"),
         ("distribution_policy", "Distribution"),
         ("issuer", "Issuer"),
+        ("currency", "Currency"),
     ):
         if fund_params.get(key):
             active_filters.append(f"{label}: {fund_params[key]}")
@@ -401,121 +711,127 @@ with browse_tab:
         active_filters.append(f"Hedged: {fund_params['hedged']}")
     if search:
         active_filters.append(f"Search: {search}")
-    active_filters.append(f"Sort: {dict(sort_options)[sort[0]]} {sort_direction}")
-    _render_chip_row(active_filters or ["No active filters"], accent_first=True)
+    _render_chip_row(active_filters or ["All active UCITS ETFs"], accent_first=True)
+    st.caption("The table uses `N.A.` for fields that do not apply to a fund type and `Unknown` for values that are still missing.")
 
-    preview_payload = load_funds_payload(db_path, tuple(sorted(fund_params.items())))
+    filter_signature = tuple(sorted(fund_params.items()))
+    if st.session_state.get("browse_filter_signature") != filter_signature:
+        st.session_state["browse_filter_signature"] = filter_signature
+        st.session_state["browse_page"] = 1
+
+    preview_payload = load_funds_payload(db_path, tuple(sorted({**fund_params, "offset": "0"}.items())))
     total = int(preview_payload["total"])
     max_pages = max(1, math.ceil(total / page_size))
-    default_page = min(max(1, int(st.session_state.get("browse_page_input", 1))), max_pages)
+    page = max(1, min(int(st.session_state.get("browse_page", 1)), max_pages))
+    st.session_state["browse_page"] = page
 
-    top_left, top_mid, top_right = st.columns([1.0, 1.0, 1.2], gap="medium")
-    with top_left:
-        st.markdown(f"<div class='mini-box'><span>Matched funds</span><strong>{total}</strong></div>", unsafe_allow_html=True)
-    with top_mid:
-        st.markdown(f"<div class='mini-box'><span>Page size</span><strong>{page_size} rows</strong></div>", unsafe_allow_html=True)
-    with top_right:
-        page = int(st.number_input("Page", min_value=1, max_value=max_pages, value=default_page, step=1, key="browse_page_input"))
+    nav_left, nav_mid, nav_right, nav_count = st.columns([0.9, 1.0, 0.9, 1.2], gap="medium")
+    with nav_left:
+        if st.button("Previous page", disabled=page <= 1, use_container_width=True):
+            st.session_state["browse_page"] = max(1, page - 1)
+            st.rerun()
+    with nav_mid:
+        st.markdown(f"<div class='stat-card'><span>Page</span><strong>{page}/{max_pages}</strong><em>{total} matched funds</em></div>", unsafe_allow_html=True)
+    with nav_right:
+        if st.button("Next page", disabled=page >= max_pages, use_container_width=True):
+            st.session_state["browse_page"] = min(max_pages, page + 1)
+            st.rerun()
+    with nav_count:
+        st.markdown(f"<div class='stat-card'><span>Order</span><strong>{_escape(sort_label)}</strong><em>{_escape(direction_label)}</em></div>", unsafe_allow_html=True)
 
     fund_params["offset"] = str((page - 1) * page_size)
     funds_payload = load_funds_payload(db_path, tuple(sorted(fund_params.items())))
-    st.markdown(
-        f"<div class='table-copy'>Showing page {page} of {max_pages}. {funds_payload['total']} funds match the current slice.</div>",
-        unsafe_allow_html=True,
-    )
+    st.markdown(f"<div class='table-note'><span>Showing page {page} of {max_pages}</span><span>{funds_payload['total']} funds match the current filters</span></div>", unsafe_allow_html=True)
 
-    left, right = st.columns([1.7, 1.0], gap="large")
+    left, right = st.columns([2.1, 1.0], gap="large")
     with left:
-        st.dataframe(
-            _fund_table(funds_payload["items"]),
-            use_container_width=True,
-            hide_index=True,
-            height=600,
-            column_config={"TER": st.column_config.NumberColumn("TER", format="%.2f")},
-        )
+        fund_table = _fund_table(funds_payload["items"])
+        if fund_table.empty:
+            st.info("No funds matched the current filters.")
+        else:
+            _render_static_table(fund_table, table_class="browser-table", height=620)
     with right:
         options = funds_payload["items"]
         if options:
-            labels = {f"{item['isin']} | {item['instrument_name']}": item["isin"] for item in options}
-            selected_label = st.selectbox("Inspect a fund from the current page", list(labels.keys()))
-            detail = load_fund_detail(db_path, labels[selected_label])
+            option_labels = [f"{item['instrument_name']} | {item['isin']}" for item in options]
+            selected_label = st.selectbox("Selected fund", option_labels, key="fund_detail_picker")
+            detail = load_fund_detail(db_path, options[option_labels.index(selected_label)]["isin"])
             if detail:
                 _render_fund_detail(detail)
         else:
-            st.info("No funds matched the current filters.")
+            st.info("No fund details available for the current slice.")
 
 with strategies_tab:
     st.markdown(
         """
         <div class="section-box">
             <div class="eyebrow">Predefined strategies</div>
-            <h3 style="margin:0 0 0.35rem 0;">Audit the recommender rather than treating it like a black box.</h3>
-            <p class="section-copy">Bucket coverage, selected funds, and diagnostics stay visible so strategy outputs remain explainable.</p>
+            <h3>Choose one strategy at a time.</h3>
+            <p class="section-copy">Instead of dumping every template at once, the strategy view now lets you focus on one portfolio design and inspect the sleeves it pulls from the database.</p>
         </div>
         """,
         unsafe_allow_html=True,
     )
 
-    ctrl_left, ctrl_mid, ctrl_right, ctrl_toggle = st.columns([0.9, 1.0, 1.25, 1.1], gap="medium")
-    strategy_venue = ctrl_left.selectbox("Venue scope", ["ALL", "XLON", "XETR"])
-    top_n = ctrl_mid.slider("Candidates per bucket", min_value=1, max_value=5, value=3)
-    preferred_currency_order = ctrl_right.text_input("Preferred currencies", value="USD,EUR,GBP")
-    with ctrl_toggle:
-        allow_missing_fees = st.checkbox("Allow missing fees", value=False)
-        allow_missing_currency = st.checkbox("Allow missing currency", value=False)
+    ctrl_one, ctrl_two, ctrl_three, ctrl_four = st.columns([0.9, 0.85, 1.3, 1.0], gap="medium")
+    strategy_venue = ctrl_one.selectbox("Venue scope", ["ALL", "XLON", "XETR"], key="strategy_venue")
+    top_n = ctrl_two.selectbox("Funds per sleeve", [1, 2, 3, 4, 5], index=2, key="strategy_top_n")
+    preferred_currency_order = ctrl_three.text_input("Preferred currencies", value="USD,EUR,GBP", key="strategy_currency_order")
+    with ctrl_four:
+        allow_missing_fees = st.checkbox("Allow missing TER", value=False, key="strategy_allow_missing_fees")
+        allow_missing_currency = st.checkbox("Allow missing currency", value=False, key="strategy_allow_missing_currency")
 
-    strategy_payload = load_strategy_payload(
-        db_path,
-        strategy_venue,
-        preferred_currency_order,
-        top_n,
-        allow_missing_fees,
-        allow_missing_currency,
-    )
+    strategy_payload = load_strategy_payload(db_path, strategy_venue, preferred_currency_order, int(top_n), allow_missing_fees, allow_missing_currency)
+    strategy_names = [str(strategy["name"]) for strategy in strategy_payload["strategies"]]
+    selected_strategy_name = st.selectbox("Strategy", strategy_names, key="strategy_selector")
+    selected_strategy = next(strategy for strategy in strategy_payload["strategies"] if strategy["name"] == selected_strategy_name)
+
+    bucket_summary_rows = []
+    for bucket in selected_strategy["buckets"]:
+        bucket_name = str(bucket["bucket_name"])
+        bucket_summary_rows.append(
+            {
+                "Bucket": bucket_name.replace("_", " ").title(),
+                "Target weight": f"{float(bucket['target_weight']):.0f}%",
+                "Funds shown": int(selected_strategy["emitted"].get(bucket_name, 0)),
+            }
+        )
+    min_bucket = min(selected_strategy["emitted"].values()) if selected_strategy["emitted"] else 0
+
     _render_chip_row([strategy_payload["gold_policy"]["note"]], accent_first=True)
+    _render_metric_grid(
+        [
+            {"label": "Strategy", "value": selected_strategy["name"], "meta": selected_strategy["description"]},
+            {"label": "Rows shown", "value": str(len(selected_strategy["rows"])), "meta": "Selected funds across all sleeves"},
+            {"label": "Smallest sleeve", "value": str(min_bucket), "meta": "Lowest sleeve count in this run"},
+            {"label": "Venue scope", "value": strategy_venue, "meta": f"Top {top_n} fund(s) per sleeve"},
+        ]
+    )
 
-    for strategy in strategy_payload["strategies"]:
-        emitted = strategy["emitted"]
-        min_bucket = min(emitted.values()) if emitted else 0
-        st.markdown(
-            f"""
-            <div class="section-box">
-                <div class="eyebrow">Strategy</div>
-                <h3 style="margin:0 0 0.35rem 0;">{_escape(strategy['name'])}</h3>
-                <p class="section-copy">{_escape(strategy['description'])}</p>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-        _render_metric_grid(
-            [
-                {"label": "Rows emitted", "value": str(len(strategy["rows"])), "meta": "Selected funds across all buckets"},
-                {"label": "Minimum bucket", "value": str(min_bucket), "meta": "Lowest sleeve count"},
-                {"label": "Buckets", "value": str(len(strategy["buckets"])), "meta": "Distinct sleeves in the template"},
-                {"label": "Venue scope", "value": strategy_venue, "meta": "Applied venue filter"},
-                {"label": "Top N", "value": str(top_n), "meta": "Candidates emitted per sleeve"},
-            ]
-        )
-        st.dataframe(
-            _strategy_rows_table(strategy["rows"]),
-            use_container_width=True,
-            hide_index=True,
-            height=360,
-            column_config={"TER": st.column_config.NumberColumn("TER", format="%.2f")},
-        )
-        with st.expander(f"{strategy['name']} diagnostics", expanded=False):
-            st.json(strategy["diagnostics"], expanded=False)
-            if strategy["rows"]:
-                st.markdown("Selection reason sample")
-                st.json(strategy["rows"][0]["selection_reason"], expanded=False)
+    summary_left, summary_right = st.columns([0.95, 1.05], gap="large")
+    with summary_left:
+        st.markdown("#### Sleeve summary")
+        st.table(pd.DataFrame(bucket_summary_rows))
+    with summary_right:
+        if selected_strategy["rows"]:
+            st.markdown("#### Strategy selections")
+            _render_static_table(_strategy_table(selected_strategy["rows"]), table_class="strategy-table", height=460)
+        else:
+            st.info("This strategy did not emit any rows under the current constraints.")
+
+    with st.expander(f"{selected_strategy['name']} diagnostics", expanded=False):
+        st.json(selected_strategy["diagnostics"], expanded=False)
+        if selected_strategy["rows"]:
+            st.markdown("Selection reason sample")
+            st.json(selected_strategy["rows"][0]["selection_reason"], expanded=False)
 
 with coverage_tab:
     st.markdown(
         """
         <div class="section-box">
             <div class="eyebrow">Coverage</div>
-            <h3 style="margin:0 0 0.35rem 0;">Keep the data-quality story visible while the UI gets richer.</h3>
-            <p class="section-copy">This view should make regressions obvious before they leak into recommendations or fund filters.</p>
+            <h3>Keep the data-quality view available while the client UI improves.</h3>
+            <p class="section-copy">This tab stays deliberately operational. It is still the fastest way to spot whether a refresh improved or degraded the labels driving the explorer and strategy views.</p>
         </div>
         """,
         unsafe_allow_html=True,
@@ -523,11 +839,12 @@ with coverage_tab:
 
     _render_metric_grid(
         [
-            {"label": "Strict candidates", "value": f"{strict_filters['kept']}/{strict_filters['considered']}", "meta": "Plain-vanilla funds surviving hard filters"},
+            {"label": "Strict candidates", "value": f"{strict_filters['kept']}/{strict_filters['considered']}", "meta": "Funds surviving hard filters"},
             {"label": "Benchmark labels", "value": _coverage_metric(profile_fields["benchmark_name"]), "meta": f"{profile_fields['benchmark_name']['pct']:.2f}% populated"},
             {"label": "Replication labels", "value": _coverage_metric(profile_fields["replication_method"]), "meta": f"{profile_fields['replication_method']['pct']:.2f}% populated"},
             {"label": "Hedge labels", "value": _coverage_metric(profile_fields["hedged_flag"]), "meta": f"{profile_fields['hedged_flag']['pct']:.2f}% known"},
             {"label": "Domicile labels", "value": _coverage_metric(profile_fields["domicile_country"]), "meta": f"{profile_fields['domicile_country']['pct']:.2f}% populated"},
+            {"label": "Fund size labels", "value": _coverage_metric(profile_fields["fund_size_value"]), "meta": f"{profile_fields['fund_size_value']['pct']:.2f}% populated"},
         ]
     )
 
@@ -545,13 +862,7 @@ with coverage_tab:
                 if isinstance(value, dict) and {"known", "total", "pct"} <= set(value.keys())
             ]
         )
-        st.dataframe(
-            profile_table,
-            use_container_width=True,
-            hide_index=True,
-            height=320,
-            column_config={"Pct": st.column_config.NumberColumn("Pct", format="%.2f")},
-        )
+        st.dataframe(profile_table, use_container_width=True, hide_index=True, height=340, column_config={"Pct": st.column_config.NumberColumn("Pct", format="%.2f")})
 
     with cov_right:
         st.markdown("#### Top missing-fee issuers")
