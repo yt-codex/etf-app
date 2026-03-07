@@ -10,6 +10,9 @@ def test_infer_issuer_from_name_handles_abbreviated_brands() -> None:
     assert infer_issuer_from_name("JPM-US EPI UE ADL").issuer_name == "JPMorgan"
     assert infer_issuer_from_name("AIS-AM.S+P500 SW.UETF EOC").issuer_name == "Amundi"
     assert infer_issuer_from_name("DEKA MSCI WORLD UCITS ETF").issuer_name == "Deka"
+    assert infer_issuer_from_name("BPE-MSCI EUR. U.ETFEOA").issuer_name == "BNP Paribas"
+    assert infer_issuer_from_name("ISIV-MSCI EMUMC.U.ETF EOA").issuer_name == "BlackRock / iShares"
+    assert infer_issuer_from_name("VAN.-L.80EQ.UCITS ETF EOA").issuer_name == "Vanguard"
 
 
 def test_infer_issuer_from_urls_prefers_official_domain_mapping() -> None:

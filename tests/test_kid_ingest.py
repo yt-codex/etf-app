@@ -109,6 +109,26 @@ def test_load_universe_rows_can_filter_by_issuer() -> None:
             normalized_name TEXT,
             domain TEXT
         );
+        CREATE TABLE cost_snapshot(
+            cost_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            instrument_id INTEGER,
+            asof_date TEXT,
+            ongoing_charges REAL NULL,
+            entry_costs REAL NULL,
+            exit_costs REAL NULL,
+            transaction_costs REAL NULL,
+            doc_id INTEGER,
+            quality_flag TEXT,
+            raw_json TEXT
+        );
+        CREATE VIEW instrument_cost_current AS
+        SELECT c.instrument_id, c.ongoing_charges
+        FROM cost_snapshot c
+        JOIN (
+            SELECT instrument_id, MAX(cost_id) AS max_cost_id
+            FROM cost_snapshot
+            GROUP BY instrument_id
+        ) latest ON latest.max_cost_id = c.cost_id;
         INSERT INTO issuer(issuer_id, normalized_name, domain) VALUES
             (1, 'Invesco', 'invesco.com'),
             (2, 'JPMorgan', 'jpmorgan.com');
@@ -132,3 +152,71 @@ def test_load_universe_rows_can_filter_by_issuer() -> None:
 
     assert len(rows) == 1
     assert rows[0]["isin"] == "IE00INVESCO1"
+
+
+def test_load_universe_rows_prioritizes_missing_fee_rows() -> None:
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.executescript(
+        """
+        CREATE TABLE universe_mvp(
+            instrument_id TEXT,
+            isin TEXT,
+            instrument_name TEXT,
+            instrument_type TEXT,
+            primary_venue_mic TEXT,
+            issuer_normalized TEXT
+        );
+        CREATE TABLE instrument(
+            instrument_id INTEGER PRIMARY KEY,
+            issuer_id INTEGER,
+            issuer_source TEXT
+        );
+        CREATE TABLE issuer(
+            issuer_id INTEGER PRIMARY KEY,
+            normalized_name TEXT,
+            domain TEXT
+        );
+        CREATE TABLE cost_snapshot(
+            cost_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            instrument_id INTEGER,
+            asof_date TEXT,
+            ongoing_charges REAL NULL,
+            entry_costs REAL NULL,
+            exit_costs REAL NULL,
+            transaction_costs REAL NULL,
+            doc_id INTEGER,
+            quality_flag TEXT,
+            raw_json TEXT
+        );
+        CREATE VIEW instrument_cost_current AS
+        SELECT c.instrument_id, c.ongoing_charges
+        FROM cost_snapshot c
+        JOIN (
+            SELECT instrument_id, MAX(cost_id) AS max_cost_id
+            FROM cost_snapshot
+            GROUP BY instrument_id
+        ) latest ON latest.max_cost_id = c.cost_id;
+        INSERT INTO issuer(issuer_id, normalized_name, domain) VALUES
+            (1, 'HSBC', 'hsbc.com');
+        INSERT INTO instrument(instrument_id, issuer_id, issuer_source) VALUES
+            (101, 1, 'manual'),
+            (202, 1, 'manual');
+        INSERT INTO universe_mvp(instrument_id, isin, instrument_name, instrument_type, primary_venue_mic, issuer_normalized) VALUES
+            ('101', 'IE00MISSFEE1', 'HSBC Missing Fee UCITS ETF', 'ETF', 'XLON', 'HSBC'),
+            ('202', 'IE00HASFEE2', 'HSBC Existing Fee UCITS ETF', 'ETF', 'XLON', 'HSBC');
+        INSERT INTO cost_snapshot(instrument_id, asof_date, ongoing_charges, quality_flag, raw_json)
+        VALUES (202, '2026-03-07', 0.10, 'ok', '{}');
+        """
+    )
+
+    rows = load_universe_rows(
+        conn,
+        limit=2,
+        venue="ALL",
+        priority_mode=True,
+        mode="template",
+        issuer_filters=["HSBC"],
+    )
+
+    assert [row["isin"] for row in rows] == ["IE00MISSFEE1", "IE00HASFEE2"]

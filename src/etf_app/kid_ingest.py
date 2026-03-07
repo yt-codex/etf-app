@@ -1779,6 +1779,7 @@ def load_universe_rows(
         issuer_placeholders = ",".join("?" for _ in issuer_terms)
         params.extend(issuer_terms)
 
+        fee_case = "CASE WHEN icc.ongoing_charges IS NULL THEN 0 ELSE 1 END"
         token_case = (
             "CASE "
             "WHEN UPPER(COALESCE(u.issuer_normalized, iss.normalized_name, '')) IN ("
@@ -1795,9 +1796,9 @@ def load_universe_rows(
             "OR UPPER(COALESCE(u.instrument_name, '')) LIKE '%VANECK%' "
             "THEN 1 ELSE 2 END"
         )
-        order_sql = f"ORDER BY {token_case}, u.isin"
+        order_sql = f"ORDER BY {fee_case}, {token_case}, u.isin"
     else:
-        order_sql = "ORDER BY u.isin"
+        order_sql = "ORDER BY CASE WHEN icc.ongoing_charges IS NULL THEN 0 ELSE 1 END, u.isin"
 
     sql = f"""
         SELECT
@@ -1812,6 +1813,7 @@ def load_universe_rows(
         FROM universe_mvp u
         JOIN instrument i ON i.instrument_id = CAST(u.instrument_id AS INTEGER)
         LEFT JOIN issuer iss ON iss.issuer_id = i.issuer_id
+        LEFT JOIN instrument_cost_current icc ON icc.instrument_id = i.instrument_id
         {where_sql}
         {order_sql}
     """

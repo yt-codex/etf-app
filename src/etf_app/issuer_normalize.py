@@ -26,17 +26,31 @@ class IssuerMatch:
 
 NAME_RULES: tuple[tuple[re.Pattern[str], str, Optional[str]], ...] = (
     (re.compile(r"^EXPAT\b", flags=re.IGNORECASE), "EXPAT ASSET MANAGEMENT EAD", None),
-    (re.compile(r"^(?:ISH|IS\.)", flags=re.IGNORECASE), "BlackRock / iShares", "ishares.com"),
+    (
+        re.compile(r"^(?:ISH|IS\.|IS[0-9]|ISIV|ISV-|IS )", flags=re.IGNORECASE),
+        "BlackRock / iShares",
+        "ishares.com",
+    ),
     (re.compile(r"^JPM(?:\b|[- ])", flags=re.IGNORECASE), "JPMorgan", "am.jpmorgan.com"),
     (re.compile(r"^UBS", flags=re.IGNORECASE), "UBS", "ubs.com"),
     (
-        re.compile(r"^(?:AIS|AM-SP|AAIS|AEOGO|MUL-AM|MUL AMUN)", flags=re.IGNORECASE),
+        re.compile(
+            r"^(?:AIS|AM-SP|AAIS|AEOGO|MUL-AM|MUL AMUN|AM\.|AMU\.|AME-|MUF-AM)",
+            flags=re.IGNORECASE,
+        ),
         "Amundi",
         "amundietf.com",
     ),
-    (re.compile(r"^BNP", flags=re.IGNORECASE), "BNP Paribas", "assetmanagement.bnpparibas.com"),
+    (
+        re.compile(r"^(?:BNP|BNPP|BNPE|BNPPE|BPE|BPEI|BPPE|B\.P\.E|B\.E\.I|PEP-|PFIE)", flags=re.IGNORECASE),
+        "BNP Paribas",
+        "assetmanagement.bnpparibas.com",
+    ),
     (re.compile(r"^OSS", flags=re.IGNORECASE), "OSSIAM", "ossiam.com"),
-    (re.compile(r"^DEKA", flags=re.IGNORECASE), "Deka", "deka-etf.de"),
+    (re.compile(r"^(?:DEKA|DK )", flags=re.IGNORECASE), "Deka", "deka-etf.de"),
+    (re.compile(r"^FTGF", flags=re.IGNORECASE), "Franklin Templeton", "franklintempleton.com"),
+    (re.compile(r"^(?:VAN\.|VANGU)", flags=re.IGNORECASE), "Vanguard", "vanguard.co.uk"),
+    (re.compile(r"^JH-", flags=re.IGNORECASE), "Janus Henderson", "janushenderson.com"),
 )
 
 
