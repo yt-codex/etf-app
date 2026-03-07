@@ -130,8 +130,8 @@ def _db_path() -> str:
     return str(Path(raw))
 
 
-def _with_conn(db_path: str, fn, *args, **kwargs):
-    conn = open_read_conn(db_path)
+def _with_conn(sqlite_path: str, fn, *args, **kwargs):
+    conn = open_read_conn(sqlite_path)
     try:
         return fn(conn, *args, **kwargs)
     finally:
