@@ -476,6 +476,10 @@ def merge_profile_metadata(
         "benchmark_name": "benchmark_name",
         "asset_class_hint": "asset_class_hint",
         "domicile_country": "domicile_country",
+        "fund_size_value": "fund_size_value",
+        "fund_size_currency": "fund_size_currency",
+        "fund_size_asof": "fund_size_asof",
+        "fund_size_scope": "fund_size_scope",
         "replication_method": "replication_method",
         "hedged_flag": "hedged_flag",
         "hedged_target": "hedged_target",
@@ -829,6 +833,40 @@ def normalize_country_name(value: Optional[str]) -> Optional[str]:
     return text.title()
 
 
+def normalize_date_to_iso(value: Optional[str]) -> Optional[str]:
+    text = normalize_space(value)
+    if not text:
+        return None
+    for fmt in ("%d/%m/%Y", "%Y-%m-%d", "%d/%b/%Y", "%d/%B/%Y"):
+        try:
+            return dt.datetime.strptime(text, fmt).date().isoformat()
+        except ValueError:
+            continue
+    return text
+
+
+def parse_amount_token(value: Optional[str]) -> Optional[float]:
+    text = normalize_space(value)
+    if not text:
+        return None
+    token = text.replace(" ", "")
+    if "," in token and "." in token:
+        if token.rfind(".") > token.rfind(","):
+            token = token.replace(",", "")
+        else:
+            token = token.replace(".", "").replace(",", ".")
+    elif "," in token:
+        parts = token.split(",")
+        if len(parts) > 1 and all(part.isdigit() and len(part) == 3 for part in parts[1:]):
+            token = "".join(parts)
+        else:
+            token = token.replace(",", ".")
+    try:
+        return float(token)
+    except ValueError:
+        return None
+
+
 def normalize_replication_method(value: Optional[str]) -> Optional[str]:
     text = normalize_space(value)
     if not text:
@@ -896,11 +934,65 @@ def extract_profile_metadata_from_factsheet(text: str, lines: list[str]) -> dict
     )
     replication_method = normalize_replication_method(replication_match.group(1) if replication_match else None)
     hedged_flag, hedged_target = parse_hedged_metadata(normalized)
+    fund_size_value: Optional[float] = None
+    fund_size_currency: Optional[str] = None
+    fund_size_asof: Optional[str] = None
+    fund_size_scope: Optional[str] = None
+
+    fund_size_asof_match = re.search(
+        r"\bAUM\s+as\s+of\s*:\s*(\d{2}/\d{2}/\d{4})",
+        normalized,
+        flags=re.IGNORECASE,
+    )
+    if fund_size_asof_match:
+        fund_size_asof = normalize_date_to_iso(fund_size_asof_match.group(1))
+
+    aum_match = re.search(
+        r"Assets?\s+Under\s+Management(?:\s*\(AUM\))?\s*:?\s*([0-9][0-9., ]*)\s*\(\s*(million|billion|bn|m)\s+([A-Z]{3})\s*\)",
+        normalized,
+        flags=re.IGNORECASE,
+    )
+    if aum_match:
+        base_value = parse_amount_token(aum_match.group(1))
+        unit = aum_match.group(2).lower()
+        multiplier = 1_000_000.0 if unit in {"million", "m"} else 1_000_000_000.0
+        if base_value is not None:
+            fund_size_value = base_value * multiplier
+            fund_size_currency = aum_match.group(3).upper()
+            fund_size_scope = "fund"
+    else:
+        alt_unit_match = re.search(
+            r"(?:Total Fund Assets|Fund Net asset Value|Total asset)\s*:?\s*([0-9][0-9., ]*)\s*\(\s*(million|billion|bn|m)\s+([A-Z]{3})\s*\)",
+            normalized,
+            flags=re.IGNORECASE,
+        )
+        if alt_unit_match:
+            base_value = parse_amount_token(alt_unit_match.group(1))
+            unit = alt_unit_match.group(2).lower()
+            multiplier = 1_000_000.0 if unit in {"million", "m"} else 1_000_000_000.0
+            if base_value is not None:
+                fund_size_value = base_value * multiplier
+                fund_size_currency = alt_unit_match.group(3).upper()
+                fund_size_scope = "fund"
+        else:
+            alt_match = re.search(
+                r"(?:Total Fund Assets|Fund Net asset Value|Total asset)\s*:?\s*([0-9][0-9., ]*)\s*\(\s*([A-Z]{3})\s*\)",
+                normalized,
+                flags=re.IGNORECASE,
+            )
+            if alt_match:
+                fund_size_value = parse_amount_token(alt_match.group(1))
+                fund_size_currency = alt_match.group(2).upper()
+                fund_size_scope = "fund"
 
     return {
         "benchmark_name": benchmark_name,
         "asset_class_hint": asset_class_hint,
         "domicile_country": domicile_country,
+        "fund_size_value": fund_size_value,
+        "fund_size_currency": fund_size_currency,
+        "fund_size_asof": fund_size_asof,
+        "fund_size_scope": fund_size_scope,
         "replication_method": replication_method,
         "hedged_flag": hedged_flag,
         "hedged_target": hedged_target,
@@ -924,6 +1016,10 @@ def parse_factsheet_pdf(pdf_bytes: bytes) -> dict[str, object]:
         "benchmark_name": profile_metadata.get("benchmark_name"),
         "asset_class_hint": profile_metadata.get("asset_class_hint"),
         "domicile_country": profile_metadata.get("domicile_country"),
+        "fund_size_value": profile_metadata.get("fund_size_value"),
+        "fund_size_currency": profile_metadata.get("fund_size_currency"),
+        "fund_size_asof": profile_metadata.get("fund_size_asof"),
+        "fund_size_scope": profile_metadata.get("fund_size_scope"),
         "replication_method": profile_metadata.get("replication_method"),
         "hedged_flag": profile_metadata.get("hedged_flag"),
         "hedged_target": profile_metadata.get("hedged_target"),
@@ -1005,6 +1101,22 @@ def load_targets(conn: sqlite3.Connection, limit: int, venue: str) -> list[sqlit
     placeholders = ",".join("?" for _ in venues)
     profile_join = ""
     profile_filter = "AND icc.ongoing_charges IS NULL"
+    profile_order = "i.isin"
+    url_map_row = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='instrument_url_map'"
+    ).fetchone()
+    url_priority = ""
+    if url_map_row is not None:
+        url_priority = """
+            CASE WHEN EXISTS (
+                SELECT 1
+                FROM instrument_url_map url_map
+                WHERE url_map.instrument_id = i.instrument_id
+                  AND url_map.url_type = 'amundi_monthly_factsheet'
+                  AND url_map.url IS NOT NULL
+                  AND TRIM(url_map.url) <> ''
+            ) THEN 0 ELSE 1 END,
+        """
     row = conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table' AND name='product_profile'"
     ).fetchone()
@@ -1017,9 +1129,27 @@ def load_targets(conn: sqlite3.Connection, limit: int, venue: str) -> list[sqlit
               OR p.benchmark_name IS NULL OR TRIM(p.benchmark_name) = ''
               OR p.asset_class_hint IS NULL OR TRIM(p.asset_class_hint) = ''
               OR p.domicile_country IS NULL OR TRIM(p.domicile_country) = ''
+              OR p.fund_size_value IS NULL
               OR p.replication_method IS NULL OR TRIM(p.replication_method) = ''
               OR p.hedged_flag IS NULL
           )
+        """
+        profile_order = f"""
+            {url_priority}
+            CASE WHEN icc.ongoing_charges IS NULL THEN 0 ELSE 1 END,
+            CASE WHEN p.fund_size_value IS NULL THEN 0 ELSE 1 END,
+            CASE WHEN p.domicile_country IS NULL OR TRIM(p.domicile_country) = '' THEN 0 ELSE 1 END,
+            CASE WHEN p.benchmark_name IS NULL OR TRIM(p.benchmark_name) = '' THEN 0 ELSE 1 END,
+            CASE WHEN p.asset_class_hint IS NULL OR TRIM(p.asset_class_hint) = '' THEN 0 ELSE 1 END,
+            CASE WHEN p.replication_method IS NULL OR TRIM(p.replication_method) = '' THEN 0 ELSE 1 END,
+            CASE WHEN p.hedged_flag IS NULL THEN 0 ELSE 1 END,
+            i.isin
+        """
+    elif url_priority:
+        profile_order = f"""
+            {url_priority}
+            CASE WHEN icc.ongoing_charges IS NULL THEN 0 ELSE 1 END,
+            i.isin
         """
     sql = f"""
         SELECT
@@ -1046,8 +1176,7 @@ def load_targets(conn: sqlite3.Connection, limit: int, venue: str) -> list[sqlit
               OR UPPER(i.instrument_name) LIKE '%LYXOR%'
           )
         ORDER BY
-            CASE WHEN icc.ongoing_charges IS NULL THEN 0 ELSE 1 END,
-            i.isin
+            {profile_order}
         LIMIT ?
     """
     params: list[object] = [*venues, limit]
@@ -1382,6 +1511,10 @@ def main(argv: list[str]) -> int:
                 "benchmark_name": None,
                 "asset_class_hint": None,
                 "domicile_country": None,
+                "fund_size_value": None,
+                "fund_size_currency": None,
+                "fund_size_asof": None,
+                "fund_size_scope": None,
                 "replication_method": None,
                 "hedged_flag": None,
                 "hedged_target": None,
@@ -1425,6 +1558,10 @@ def main(argv: list[str]) -> int:
                         "benchmark_name": parsed.get("benchmark_name"),
                         "asset_class_hint": parsed.get("asset_class_hint"),
                         "domicile_country": parsed.get("domicile_country"),
+                        "fund_size_value": parsed.get("fund_size_value"),
+                        "fund_size_currency": parsed.get("fund_size_currency"),
+                        "fund_size_asof": parsed.get("fund_size_asof"),
+                        "fund_size_scope": parsed.get("fund_size_scope"),
                         "replication_method": parsed.get("replication_method"),
                         "hedged_flag": parsed.get("hedged_flag"),
                         "hedged_target": parsed.get("hedged_target"),
@@ -1518,6 +1655,10 @@ def main(argv: list[str]) -> int:
                         "benchmark_name": merged_parse.get("benchmark_name"),
                         "asset_class_hint": merged_parse.get("asset_class_hint"),
                         "domicile_country": merged_parse.get("domicile_country"),
+                        "fund_size_value": merged_parse.get("fund_size_value"),
+                        "fund_size_currency": merged_parse.get("fund_size_currency"),
+                        "fund_size_asof": merged_parse.get("fund_size_asof"),
+                        "fund_size_scope": merged_parse.get("fund_size_scope"),
                         "replication_method": merged_parse.get("replication_method"),
                         "hedged_flag": merged_parse.get("hedged_flag"),
                         "hedged_target": merged_parse.get("hedged_target"),

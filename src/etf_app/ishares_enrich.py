@@ -245,6 +245,22 @@ def load_targets(conn: sqlite3.Connection, limit: int, venue: str) -> list[sqlit
     placeholders = ",".join("?" for _ in venues)
     profile_join = ""
     profile_filter = "AND icc.ongoing_charges IS NULL"
+    profile_order = "i.isin"
+    url_map_row = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='instrument_url_map'"
+    ).fetchone()
+    url_priority = ""
+    if url_map_row is not None:
+        url_priority = """
+            CASE WHEN EXISTS (
+                SELECT 1
+                FROM instrument_url_map url_map
+                WHERE url_map.instrument_id = i.instrument_id
+                  AND url_map.url_type = 'ishares_product_page'
+                  AND url_map.url IS NOT NULL
+                  AND TRIM(url_map.url) <> ''
+            ) THEN 0 ELSE 1 END,
+        """
     if product_profile_exists(conn):
         profile_join = "LEFT JOIN product_profile p ON p.instrument_id = i.instrument_id"
         profile_filter = """
@@ -254,9 +270,27 @@ def load_targets(conn: sqlite3.Connection, limit: int, venue: str) -> list[sqlit
               OR p.benchmark_name IS NULL OR TRIM(p.benchmark_name) = ''
               OR p.asset_class_hint IS NULL OR TRIM(p.asset_class_hint) = ''
               OR p.domicile_country IS NULL OR TRIM(p.domicile_country) = ''
+              OR p.fund_size_value IS NULL
               OR p.replication_method IS NULL OR TRIM(p.replication_method) = ''
               OR p.hedged_flag IS NULL
           )
+        """
+        profile_order = f"""
+            {url_priority}
+            CASE WHEN icc.ongoing_charges IS NULL THEN 0 ELSE 1 END,
+            CASE WHEN p.fund_size_value IS NULL THEN 0 ELSE 1 END,
+            CASE WHEN p.domicile_country IS NULL OR TRIM(p.domicile_country) = '' THEN 0 ELSE 1 END,
+            CASE WHEN p.benchmark_name IS NULL OR TRIM(p.benchmark_name) = '' THEN 0 ELSE 1 END,
+            CASE WHEN p.asset_class_hint IS NULL OR TRIM(p.asset_class_hint) = '' THEN 0 ELSE 1 END,
+            CASE WHEN p.replication_method IS NULL OR TRIM(p.replication_method) = '' THEN 0 ELSE 1 END,
+            CASE WHEN p.hedged_flag IS NULL THEN 0 ELSE 1 END,
+            i.isin
+        """
+    elif url_priority:
+        profile_order = f"""
+            {url_priority}
+            CASE WHEN icc.ongoing_charges IS NULL THEN 0 ELSE 1 END,
+            i.isin
         """
     sql = f"""
         SELECT
@@ -279,8 +313,7 @@ def load_targets(conn: sqlite3.Connection, limit: int, venue: str) -> list[sqlit
           )
           {profile_filter}
         ORDER BY
-            CASE WHEN icc.ongoing_charges IS NULL THEN 0 ELSE 1 END,
-            i.isin
+            {profile_order}
         LIMIT ?
     """
     params: list[object] = [*venues, limit]
@@ -637,6 +670,46 @@ def parse_percent(value: str) -> Optional[float]:
     return None
 
 
+def parse_date_to_iso(value: Optional[str]) -> Optional[str]:
+    text = normalize_space(value)
+    if not text:
+        return None
+    normalized = re.sub(r"^\s*as of\s*", "", text, flags=re.IGNORECASE)
+    for fmt in ("%d/%b/%Y", "%d/%B/%Y", "%d/%m/%Y", "%Y-%m-%d"):
+        try:
+            return dt.datetime.strptime(normalized, fmt).date().isoformat()
+        except ValueError:
+            continue
+    return normalized
+
+
+def parse_money_amount(value: Optional[str]) -> tuple[Optional[float], Optional[str]]:
+    text = normalize_space(value)
+    if not text:
+        return None, None
+    currency_match = re.search(r"\b([A-Z]{3})\b", text)
+    currency = currency_match.group(1) if currency_match else None
+    number_match = re.search(r"([0-9][0-9.,]*)", text)
+    if not number_match:
+        return None, currency
+    token = number_match.group(1)
+    if "," in token and "." in token:
+        if token.rfind(".") > token.rfind(","):
+            token = token.replace(",", "")
+        else:
+            token = token.replace(".", "").replace(",", ".")
+    elif "," in token:
+        parts = token.split(",")
+        if len(parts) > 1 and all(part.isdigit() and len(part) == 3 for part in parts[1:]):
+            token = "".join(parts)
+        else:
+            token = token.replace(",", ".")
+    try:
+        return float(token), currency
+    except ValueError:
+        return None, currency
+
+
 def _lookup_fact_value(
     facts: dict[str, str],
     *,
@@ -695,16 +768,22 @@ def _clean_caption_text(caption_node: BeautifulSoup) -> str:
 def parse_ishares_product_page(html: str) -> dict[str, object]:
     soup = BeautifulSoup(html, "html.parser")
     facts: dict[str, str] = {}
+    fact_asof: dict[str, str] = {}
 
     for item in soup.select("div.product-data-item"):
         caption = item.select_one(".caption")
         data = item.select_one(".data")
         if not caption or not data:
             continue
+        asof_node = caption.select_one(".as-of-date")
+        asof_text = normalize_space(asof_node.get_text(" ", strip=True)) if asof_node else ""
         caption_text = _clean_caption_text(caption)
         data_text = normalize_space(data.get_text(" ", strip=True))
         if caption_text and data_text:
             facts[caption_text] = data_text
+            parsed_asof = parse_date_to_iso(asof_text)
+            if parsed_asof:
+                fact_asof[caption_text] = parsed_asof
 
     ter: Optional[float] = None
     use_of_income: Optional[str] = None
@@ -754,6 +833,23 @@ def parse_ishares_product_page(html: str) -> dict[str, object]:
         exact_keys=("Fund Domicile", "Domicile"),
         contains_keys=("DOMICILE",),
     )
+    fund_size_value: Optional[float] = None
+    fund_size_currency: Optional[str] = None
+    fund_size_asof: Optional[str] = None
+    fund_size_scope: Optional[str] = None
+    fund_size_key: Optional[str] = None
+    for candidate_key, scope in (("Net Assets of Fund", "fund"), ("Net Assets", "share_class")):
+        if candidate_key not in facts:
+            continue
+        parsed_value, parsed_currency = parse_money_amount(facts[candidate_key])
+        if parsed_value is None:
+            continue
+        fund_size_value = parsed_value
+        fund_size_currency = parsed_currency
+        fund_size_asof = fact_asof.get(candidate_key)
+        fund_size_scope = scope
+        fund_size_key = candidate_key
+        break
     replication_method = _normalize_replication_method(
         _lookup_fact_value(
             facts,
@@ -776,6 +872,11 @@ def parse_ishares_product_page(html: str) -> dict[str, object]:
         "benchmark_name": benchmark_name,
         "asset_class_hint": asset_class_hint,
         "domicile_country": domicile_country,
+        "fund_size_value": fund_size_value,
+        "fund_size_currency": fund_size_currency,
+        "fund_size_asof": fund_size_asof,
+        "fund_size_scope": fund_size_scope,
+        "fund_size_key": fund_size_key,
         "replication_method": replication_method,
         "hedged_flag": hedged_flag,
         "hedged_target": hedged_target,
@@ -1059,10 +1160,15 @@ def main(argv: list[str]) -> int:
                 "benchmark_name": parsed_payload.get("benchmark_name"),
                 "asset_class_hint": parsed_payload.get("asset_class_hint"),
                 "domicile_country": parsed_payload.get("domicile_country"),
+                "fund_size_value": parsed_payload.get("fund_size_value"),
+                "fund_size_currency": parsed_payload.get("fund_size_currency"),
+                "fund_size_asof": parsed_payload.get("fund_size_asof"),
+                "fund_size_scope": parsed_payload.get("fund_size_scope"),
                 "replication_method": parsed_payload.get("replication_method"),
                 "hedged_flag": parsed_payload.get("hedged_flag"),
                 "hedged_target": parsed_payload.get("hedged_target"),
                 "facts_keys": sorted(list((parsed_payload.get("facts") or {}).keys()))[:30],
+                "fund_size_key": parsed_payload.get("fund_size_key"),
             }
 
             conn.execute("BEGIN")
@@ -1082,6 +1188,10 @@ def main(argv: list[str]) -> int:
                         "benchmark_name": parsed_payload.get("benchmark_name"),
                         "asset_class_hint": parsed_payload.get("asset_class_hint"),
                         "domicile_country": parsed_payload.get("domicile_country"),
+                        "fund_size_value": parsed_payload.get("fund_size_value"),
+                        "fund_size_currency": parsed_payload.get("fund_size_currency"),
+                        "fund_size_asof": parsed_payload.get("fund_size_asof"),
+                        "fund_size_scope": parsed_payload.get("fund_size_scope"),
                         "replication_method": parsed_payload.get("replication_method"),
                         "hedged_flag": parsed_payload.get("hedged_flag"),
                         "hedged_target": parsed_payload.get("hedged_target"),

@@ -109,6 +109,10 @@ def collect_profile_summary(conn: sqlite3.Connection) -> dict[str, object]:
                 SUM(CASE WHEN p.benchmark_name IS NOT NULL AND TRIM(p.benchmark_name) <> '' THEN 1 ELSE 0 END) AS benchmark_name,
                 SUM(CASE WHEN p.asset_class_hint IS NOT NULL AND TRIM(p.asset_class_hint) <> '' THEN 1 ELSE 0 END) AS asset_class_hint,
                 SUM(CASE WHEN p.domicile_country IS NOT NULL AND TRIM(p.domicile_country) <> '' THEN 1 ELSE 0 END) AS domicile_country,
+                SUM(CASE WHEN p.fund_size_value IS NOT NULL THEN 1 ELSE 0 END) AS fund_size_value,
+                SUM(CASE WHEN p.fund_size_currency IS NOT NULL AND TRIM(p.fund_size_currency) <> '' THEN 1 ELSE 0 END) AS fund_size_currency,
+                SUM(CASE WHEN p.fund_size_asof IS NOT NULL AND TRIM(p.fund_size_asof) <> '' THEN 1 ELSE 0 END) AS fund_size_asof,
+                SUM(CASE WHEN p.fund_size_scope IS NOT NULL AND TRIM(p.fund_size_scope) <> '' THEN 1 ELSE 0 END) AS fund_size_scope,
                 SUM(CASE WHEN p.replication_method IS NOT NULL AND TRIM(p.replication_method) <> '' THEN 1 ELSE 0 END) AS replication_method,
                 SUM(CASE WHEN p.hedged_flag IS NOT NULL THEN 1 ELSE 0 END) AS hedged_flag,
                 SUM(CASE WHEN p.hedged_target IS NOT NULL AND TRIM(p.hedged_target) <> '' THEN 1 ELSE 0 END) AS hedged_target
@@ -129,6 +133,10 @@ def collect_profile_summary(conn: sqlite3.Connection) -> dict[str, object]:
             "benchmark_name": _field_coverage(_safe_count(row.get("benchmark_name")), total),
             "asset_class_hint": _field_coverage(_safe_count(row.get("asset_class_hint")), total),
             "domicile_country": _field_coverage(_safe_count(row.get("domicile_country")), total),
+            "fund_size_value": _field_coverage(_safe_count(row.get("fund_size_value")), total),
+            "fund_size_currency": _field_coverage(_safe_count(row.get("fund_size_currency")), total),
+            "fund_size_asof": _field_coverage(_safe_count(row.get("fund_size_asof")), total),
+            "fund_size_scope": _field_coverage(_safe_count(row.get("fund_size_scope")), total),
             "replication_method": _field_coverage(_safe_count(row.get("replication_method")), total),
             "hedged_flag": _field_coverage(_safe_count(row.get("hedged_flag")), total),
             "hedged_target": _field_coverage(_safe_count(row.get("hedged_target")), total),
@@ -380,6 +388,16 @@ def print_completeness_summary(report_path: Path, snapshot: dict[str, object]) -
         "profile benchmark_name coverage: "
         f"{profile['fields']['benchmark_name']['known']}/{profile['fields']['benchmark_name']['total']} "
         f"({profile['fields']['benchmark_name']['pct']:.2f}%)"
+    )
+    print(
+        "profile domicile_country coverage: "
+        f"{profile['fields']['domicile_country']['known']}/{profile['fields']['domicile_country']['total']} "
+        f"({profile['fields']['domicile_country']['pct']:.2f}%)"
+    )
+    print(
+        "profile fund_size_value coverage: "
+        f"{profile['fields']['fund_size_value']['known']}/{profile['fields']['fund_size_value']['total']} "
+        f"({profile['fields']['fund_size_value']['pct']:.2f}%)"
     )
     print(
         "equity geography coverage: "

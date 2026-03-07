@@ -83,6 +83,10 @@ def ensure_product_profile_schema(conn: sqlite3.Connection) -> None:
             benchmark_name TEXT NULL,
             asset_class_hint TEXT NULL,
             domicile_country TEXT NULL,
+            fund_size_value REAL NULL,
+            fund_size_currency TEXT NULL,
+            fund_size_asof TEXT NULL,
+            fund_size_scope TEXT NULL,
             replication_method TEXT NULL,
             hedged_flag INTEGER NULL CHECK (hedged_flag IN (0, 1)),
             hedged_target TEXT NULL,
@@ -100,6 +104,10 @@ def ensure_product_profile_schema(conn: sqlite3.Connection) -> None:
     ensure_column(conn, "product_profile", "benchmark_name", "TEXT")
     ensure_column(conn, "product_profile", "asset_class_hint", "TEXT")
     ensure_column(conn, "product_profile", "domicile_country", "TEXT")
+    ensure_column(conn, "product_profile", "fund_size_value", "REAL")
+    ensure_column(conn, "product_profile", "fund_size_currency", "TEXT")
+    ensure_column(conn, "product_profile", "fund_size_asof", "TEXT")
+    ensure_column(conn, "product_profile", "fund_size_scope", "TEXT")
     ensure_column(conn, "product_profile", "replication_method", "TEXT")
     ensure_column(conn, "product_profile", "hedged_flag", "INTEGER")
     ensure_column(conn, "product_profile", "hedged_target", "TEXT")
@@ -279,6 +287,46 @@ def _coerce_optional_flag(value: object) -> Optional[int]:
     return None
 
 
+def _coerce_optional_float(value: object) -> Optional[float]:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    text = str(value).strip().replace(" ", "")
+    if not text:
+        return None
+    if "," in text and "." in text:
+        if text.rfind(".") > text.rfind(","):
+            text = text.replace(",", "")
+        else:
+            text = text.replace(".", "").replace(",", ".")
+    elif "," in text:
+        parts = text.split(",")
+        if len(parts) > 1 and all(part.isdigit() and len(part) == 3 for part in parts[1:]):
+            text = "".join(parts)
+        else:
+            text = text.replace(",", ".")
+    try:
+        return float(text)
+    except ValueError:
+        return None
+
+
+def _normalize_date_value(value: object) -> Optional[str]:
+    text = _normalize_text_value(value)
+    if not text:
+        return None
+    normalized = text.replace("as of", "").replace("As of", "").strip()
+    for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%d/%b/%Y", "%d/%B/%Y", "%d-%b-%Y", "%d-%B-%Y"):
+        try:
+            return dt.datetime.strptime(normalized, fmt).date().isoformat()
+        except ValueError:
+            continue
+    return normalized
+
+
 def _first_present(payload: dict[str, object], *keys: str) -> object:
     for key in keys:
         if key in payload and payload.get(key) is not None:
@@ -298,6 +346,58 @@ def _normalize_replication_method(value: object) -> Optional[str]:
     return text
 
 
+def _normalize_domicile_country(value: object) -> Optional[str]:
+    text = _normalize_text_value(value)
+    if not text:
+        return None
+    aliases = {
+        "FRANCE": "France",
+        "FRENCH": "France",
+        "GERMAN": "Germany",
+        "GERMANY": "Germany",
+        "IRELAND": "Ireland",
+        "IRISH": "Ireland",
+        "LUXEMBOURG": "Luxembourg",
+        "LUXEMBOURGISH": "Luxembourg",
+        "UNITED KINGDOM": "United Kingdom",
+        "UK": "United Kingdom",
+    }
+    return aliases.get(text.upper(), text)
+
+
+def _infer_domicile_country_from_isin(value: object) -> Optional[str]:
+    text = _normalize_text_value(value)
+    if not text or len(text) < 2:
+        return None
+    prefix = text[:2].upper()
+    prefix_map = {
+        "AT": "Austria",
+        "BE": "Belgium",
+        "CH": "Switzerland",
+        "DE": "Germany",
+        "ES": "Spain",
+        "FR": "France",
+        "GB": "United Kingdom",
+        "IE": "Ireland",
+        "IT": "Italy",
+        "LU": "Luxembourg",
+        "NL": "Netherlands",
+    }
+    return prefix_map.get(prefix)
+
+
+def _normalize_fund_size_scope(value: object) -> Optional[str]:
+    text = _normalize_text_value(value)
+    if not text:
+        return None
+    upper = text.upper()
+    if "SHARE" in upper:
+        return "share_class"
+    if "FUND" in upper or "AUM" in upper or "ASSET" in upper:
+        return "fund"
+    return text.lower()
+
+
 def _extract_profile_metadata_from_payload(payload: dict[str, object]) -> dict[str, object]:
     extracted: dict[str, object] = {}
     for container_key in ("parsed", "parse", "parse_ongoing", "profile_metadata", "metadata"):
@@ -311,9 +411,51 @@ def _extract_profile_metadata_from_payload(payload: dict[str, object]) -> dict[s
     asset_class_hint = _normalize_text_value(
         _first_present(payload, "asset_class_hint", "asset_class", "assetClass", "fund_asset_class")
     )
-    domicile_country = _normalize_text_value(
+    domicile_country = _normalize_domicile_country(
         _first_present(payload, "domicile_country", "domicile", "fund_domicile", "domicileCountry")
     )
+    fund_size_value = _coerce_optional_float(
+        _first_present(
+            payload,
+            "fund_size_value",
+            "aum_value",
+            "assets_under_management_value",
+            "net_assets_of_fund_value",
+            "net_assets_value",
+        )
+    )
+    fund_size_currency = _normalize_text_value(
+        _first_present(
+            payload,
+            "fund_size_currency",
+            "aum_currency",
+            "assets_under_management_currency",
+            "net_assets_of_fund_currency",
+            "net_assets_currency",
+        )
+    )
+    fund_size_asof = _normalize_date_value(
+        _first_present(
+            payload,
+            "fund_size_asof",
+            "aum_asof",
+            "assets_under_management_asof",
+            "net_assets_of_fund_asof",
+            "net_assets_asof",
+        )
+    )
+    fund_size_scope = _normalize_fund_size_scope(
+        _first_present(
+            payload,
+            "fund_size_scope",
+            "aum_scope",
+            "assets_under_management_scope",
+            "net_assets_of_fund_scope",
+            "net_assets_scope",
+        )
+    )
+    if fund_size_value is not None and fund_size_scope is None:
+        fund_size_scope = "fund"
     replication_method = _normalize_replication_method(
         _first_present(payload, "replication_method", "replication", "replication_type", "replicationType")
     )
@@ -327,6 +469,10 @@ def _extract_profile_metadata_from_payload(payload: dict[str, object]) -> dict[s
     extracted["benchmark_name"] = benchmark_name
     extracted["asset_class_hint"] = asset_class_hint
     extracted["domicile_country"] = domicile_country
+    extracted["fund_size_value"] = fund_size_value
+    extracted["fund_size_currency"] = fund_size_currency
+    extracted["fund_size_asof"] = fund_size_asof
+    extracted["fund_size_scope"] = fund_size_scope
     extracted["replication_method"] = replication_method
     extracted["hedged_flag"] = hedged_flag
     extracted["hedged_target"] = hedged_target
@@ -353,6 +499,10 @@ def _merge_profile_metadata_rows(
                 "benchmark_name": None,
                 "asset_class_hint": None,
                 "domicile_country": None,
+                "fund_size_value": None,
+                "fund_size_currency": None,
+                "fund_size_asof": None,
+                "fund_size_scope": None,
                 "replication_method": None,
                 "hedged_flag": None,
                 "hedged_target": None,
@@ -410,7 +560,7 @@ def refresh_product_profile(conn: sqlite3.Connection) -> ProfileSyncStats:
 
     instruments = conn.execute(
         """
-        SELECT instrument_id, instrument_name, ucits_flag, ucits_source
+        SELECT instrument_id, isin, instrument_name, ucits_flag, ucits_source
         FROM instrument
         ORDER BY instrument_id
         """
@@ -426,6 +576,10 @@ def refresh_product_profile(conn: sqlite3.Connection) -> ProfileSyncStats:
             Optional[str],
             Optional[float],
             Optional[str],
+            Optional[str],
+            Optional[str],
+            Optional[str],
+            Optional[float],
             Optional[str],
             Optional[str],
             Optional[str],
@@ -470,7 +624,13 @@ def refresh_product_profile(conn: sqlite3.Connection) -> ProfileSyncStats:
         metadata = latest_metadata.get(instrument_id, {})
         benchmark_name = _normalize_text_value(metadata.get("benchmark_name"))
         asset_class_hint = _normalize_text_value(metadata.get("asset_class_hint"))
-        domicile_country = _normalize_text_value(metadata.get("domicile_country"))
+        domicile_country = _normalize_domicile_country(metadata.get("domicile_country"))
+        if domicile_country is None:
+            domicile_country = _infer_domicile_country_from_isin(row["isin"])
+        fund_size_value = _coerce_optional_float(metadata.get("fund_size_value"))
+        fund_size_currency = _normalize_text_value(metadata.get("fund_size_currency"))
+        fund_size_asof = _normalize_date_value(metadata.get("fund_size_asof"))
+        fund_size_scope = _normalize_fund_size_scope(metadata.get("fund_size_scope"))
         replication_method = _normalize_text_value(metadata.get("replication_method"))
         hedged_flag = _coerce_optional_flag(metadata.get("hedged_flag"))
         hedged_target = _normalize_text_value(metadata.get("hedged_target"))
@@ -485,6 +645,10 @@ def refresh_product_profile(conn: sqlite3.Connection) -> ProfileSyncStats:
                 benchmark_name,
                 asset_class_hint,
                 domicile_country,
+                fund_size_value,
+                fund_size_currency,
+                fund_size_asof,
+                fund_size_scope,
                 replication_method,
                 hedged_flag,
                 hedged_target,
@@ -517,14 +681,18 @@ def refresh_product_profile(conn: sqlite3.Connection) -> ProfileSyncStats:
                     next_ucits_updated_at,
                     ongoing_charges,
                     ongoing_charges_asof,
-                    benchmark_name,
-                    asset_class_hint,
-                    domicile_country,
-                    replication_method,
-                    hedged_flag,
-                    hedged_target,
-                    ts,
-                )
+                benchmark_name,
+                asset_class_hint,
+                domicile_country,
+                fund_size_value,
+                fund_size_currency,
+                fund_size_asof,
+                fund_size_scope,
+                replication_method,
+                hedged_flag,
+                hedged_target,
+                ts,
+            )
             )
 
     if instrument_updates:
@@ -552,12 +720,16 @@ def refresh_product_profile(conn: sqlite3.Connection) -> ProfileSyncStats:
                 benchmark_name,
                 asset_class_hint,
                 domicile_country,
+                fund_size_value,
+                fund_size_currency,
+                fund_size_asof,
+                fund_size_scope,
                 replication_method,
                 hedged_flag,
                 hedged_target,
                 updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(instrument_id) DO UPDATE SET
                 distribution_policy = COALESCE(excluded.distribution_policy, product_profile.distribution_policy),
                 ucits_flag = COALESCE(excluded.ucits_flag, product_profile.ucits_flag),
@@ -568,6 +740,10 @@ def refresh_product_profile(conn: sqlite3.Connection) -> ProfileSyncStats:
                 benchmark_name = COALESCE(excluded.benchmark_name, product_profile.benchmark_name),
                 asset_class_hint = COALESCE(excluded.asset_class_hint, product_profile.asset_class_hint),
                 domicile_country = COALESCE(excluded.domicile_country, product_profile.domicile_country),
+                fund_size_value = COALESCE(excluded.fund_size_value, product_profile.fund_size_value),
+                fund_size_currency = COALESCE(excluded.fund_size_currency, product_profile.fund_size_currency),
+                fund_size_asof = COALESCE(excluded.fund_size_asof, product_profile.fund_size_asof),
+                fund_size_scope = COALESCE(excluded.fund_size_scope, product_profile.fund_size_scope),
                 replication_method = COALESCE(excluded.replication_method, product_profile.replication_method),
                 hedged_flag = COALESCE(excluded.hedged_flag, product_profile.hedged_flag),
                 hedged_target = COALESCE(excluded.hedged_target, product_profile.hedged_target),

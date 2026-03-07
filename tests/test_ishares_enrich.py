@@ -35,6 +35,10 @@ def test_parse_ishares_product_page_extracts_profile_metadata() -> None:
       <div class="data">Ireland</div>
     </div>
     <div class="product-data-item">
+      <div class="caption">Net Assets of Fund<div class="as-of-date">as of 06/Mar/2026</div></div>
+      <div class="data">USD 123,456,789</div>
+    </div>
+    <div class="product-data-item">
       <div class="caption">Replication Method</div>
       <div class="data">Physical</div>
     </div>
@@ -64,6 +68,10 @@ def test_parse_ishares_product_page_extracts_profile_metadata() -> None:
     assert parsed["benchmark_name"] == "MSCI World Index"
     assert parsed["asset_class_hint"] == "Equity"
     assert parsed["domicile_country"] == "Ireland"
+    assert parsed["fund_size_value"] == 123456789.0
+    assert parsed["fund_size_currency"] == "USD"
+    assert parsed["fund_size_asof"] == "2026-03-06"
+    assert parsed["fund_size_scope"] == "fund"
     assert parsed["replication_method"] == "physical"
     assert parsed["hedged_flag"] == 1
     assert parsed["hedged_target"] == "GBP"
@@ -236,6 +244,75 @@ def test_load_targets_prioritizes_missing_fee_rows_before_metadata_only_rows() -
     assert [int(row["instrument_id"]) for row in rows] == [1, 2]
 
 
+def test_load_targets_prioritizes_reusable_urls_then_fund_size_gaps() -> None:
+    conn = make_conn()
+    conn.execute(
+        "INSERT INTO issuer(issuer_id, issuer_name, normalized_name) VALUES (1, 'BlackRock iShares', 'BlackRock / iShares')"
+    )
+    conn.execute(
+        """
+        INSERT INTO instrument(instrument_id, isin, instrument_name, issuer_id, universe_mvp_flag, ucits_flag)
+        VALUES
+            (1, 'IE0000000101', 'iShares Fund Size Gap UCITS ETF', 1, 1, 1),
+            (2, 'IE0000000102', 'iShares Benchmark Gap UCITS ETF', 1, 1, 1),
+            (3, 'IE0000000103', 'iShares No URL Gap UCITS ETF', 1, 1, 1)
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO listing(listing_id, instrument_id, ticker, venue_mic, primary_flag, status, trading_currency)
+        VALUES
+            (1, 1, 'AAA', 'XETR', 1, 'active', 'EUR'),
+            (2, 2, 'BBB', 'XETR', 1, 'active', 'EUR'),
+            (3, 3, 'CCC', 'XETR', 1, 'active', 'EUR')
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO cost_snapshot(instrument_id, asof_date, ongoing_charges, quality_flag, raw_json)
+        VALUES
+            (1, '2026-03-07', 0.12, 'issuer_page_ok', '{}'),
+            (2, '2026-03-07', 0.12, 'issuer_page_ok', '{}'),
+            (3, '2026-03-07', 0.12, 'issuer_page_ok', '{}')
+        """
+    )
+    conn.executemany(
+        """
+        INSERT INTO product_profile(
+            instrument_id,
+            ongoing_charges,
+            ongoing_charges_asof,
+            benchmark_name,
+            asset_class_hint,
+            domicile_country,
+            fund_size_value,
+            replication_method,
+            hedged_flag,
+            updated_at
+        ) VALUES (?, 0.12, '2026-03-07', ?, 'Equity', 'Ireland', ?, 'physical', 0, '2026-03-07T00:00:00Z')
+        """,
+        [
+            (1, "MSCI World", None),
+            (2, None, 100000000.0),
+            (3, "MSCI World", None),
+        ],
+    )
+    conn.executemany(
+        """
+        INSERT INTO instrument_url_map(instrument_id, url_type, url)
+        VALUES (?, 'ishares_product_page', ?)
+        """,
+        [
+            (1, "https://example.com/fund-1"),
+            (2, "https://example.com/fund-2"),
+        ],
+    )
+
+    rows = load_targets(conn, limit=3, venue="ALL")
+
+    assert [int(row["instrument_id"]) for row in rows] == [1, 2, 3]
+
+
 def test_insert_cost_snapshot_from_ter_stores_profile_metadata() -> None:
     conn = make_conn()
 
@@ -251,6 +328,10 @@ def test_insert_cost_snapshot_from_ter_stores_profile_metadata() -> None:
             "benchmark_name": "MSCI World Index",
             "asset_class_hint": "Equity",
             "domicile_country": "Ireland",
+            "fund_size_value": 987654321.0,
+            "fund_size_currency": "USD",
+            "fund_size_asof": "2026-03-07",
+            "fund_size_scope": "fund",
             "replication_method": "physical",
             "hedged_flag": 0,
         },
@@ -259,6 +340,8 @@ def test_insert_cost_snapshot_from_ter_stores_profile_metadata() -> None:
     payload = json.loads(str(row["raw_json"]))
 
     assert payload["profile_metadata"]["benchmark_name"] == "MSCI World Index"
+    assert payload["profile_metadata"]["fund_size_value"] == 987654321.0
+    assert payload["profile_metadata"]["fund_size_currency"] == "USD"
     assert payload["profile_metadata"]["replication_method"] == "physical"
     assert payload["profile_metadata"]["hedged_flag"] == 0
 

@@ -100,16 +100,17 @@ def make_api_db(tmp_path) -> str:
         INSERT INTO product_profile(
             instrument_id, distribution_policy, ucits_flag, ucits_source, ucits_updated_at,
             ongoing_charges, ongoing_charges_asof, benchmark_name, asset_class_hint, domicile_country,
+            fund_size_value, fund_size_currency, fund_size_asof, fund_size_scope,
             replication_method, hedged_flag, hedged_target, updated_at
         )
-        VALUES (?, ?, ?, ?, '2026-03-07', ?, '2026-03-07', ?, ?, ?, ?, ?, ?, '2026-03-07T00:00:00Z')
+        VALUES (?, ?, ?, ?, '2026-03-07', ?, '2026-03-07', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '2026-03-07T00:00:00Z')
         """,
         [
-            (1, "Accumulating", 1, "issuer_metadata_snapshot", 0.12, "MSCI World", "equity", "Ireland", "physical", 1, "GBP"),
-            (2, "Accumulating", 1, "issuer_metadata_snapshot", 0.25, "MSCI World Small Cap Value", "equity", "Ireland", "physical", None, None),
-            (3, "Distributing", 1, "issuer_metadata_snapshot", 0.20, "Euro Government Bond 15+", "bond", "Ireland", "physical", None, None),
-            (4, "Accumulating", 1, "issuer_metadata_snapshot", 0.10, "US Treasury 1-3", "bond", "Ireland", "physical", None, None),
-            (5, None, 0, "issuer_metadata_snapshot", 0.39, "Physical Gold", "commodity", "Jersey", "physical", None, None),
+            (1, "Accumulating", 1, "issuer_metadata_snapshot", 0.12, "MSCI World", "equity", "Ireland", 1500000000.0, "USD", "2026-03-06", "fund", "physical", 1, "GBP"),
+            (2, "Accumulating", 1, "issuer_metadata_snapshot", 0.25, "MSCI World Small Cap Value", "equity", "Ireland", 420000000.0, "USD", "2026-03-06", "fund", "physical", None, None),
+            (3, "Distributing", 1, "issuer_metadata_snapshot", 0.20, "Euro Government Bond 15+", "bond", "Ireland", 800000000.0, "EUR", "2026-03-06", "fund", "physical", None, None),
+            (4, "Accumulating", 1, "issuer_metadata_snapshot", 0.10, "US Treasury 1-3", "bond", "Ireland", 650000000.0, "USD", "2026-03-06", "fund", "physical", None, None),
+            (5, None, 0, "issuer_metadata_snapshot", 0.39, "Physical Gold", "commodity", "Jersey", 210000000.0, "USD", "2026-03-06", "fund", "physical", None, None),
         ],
     )
     conn.executemany(
@@ -199,6 +200,8 @@ def test_get_fund_detail_includes_taxonomy_evidence(tmp_path) -> None:
 
     assert payload is not None
     assert payload["hedged_flag"] == 1
+    assert payload["fund_size_value"] == 1500000000.0
+    assert payload["fund_size_currency"] == "USD"
     assert payload["taxonomy_evidence"]["rules"] == ["profile:benchmark_name", "hedged:GBP"]
 
 
@@ -214,6 +217,7 @@ def test_api_endpoints_expose_filters_completeness_and_strategies(tmp_path) -> N
     status, _headers, completeness_payload = call_json(app, "/api/completeness")
     assert status == "200 OK"
     assert completeness_payload["product_profile"]["fields"]["ongoing_charges"]["known"] == 5
+    assert completeness_payload["product_profile"]["fields"]["fund_size_value"]["known"] == 5
     assert completeness_payload["taxonomy"]["equity"]["geography_known"]["known"] == 2
 
     status, _headers, strategy_payload = call_json(app, "/api/strategies", "venue=ALL&top_n=1")
@@ -234,6 +238,7 @@ def test_health_and_fund_detail_routes(tmp_path) -> None:
     status, _headers, payload = call_json(app, "/api/funds/IE000WORLD01")
     assert status == "200 OK"
     assert payload["benchmark_name"] == "MSCI World"
+    assert payload["fund_size_scope"] == "fund"
 
     status, _headers, payload = call_json(app, "/api/funds/UNKNOWN")
     assert status == "404 Not Found"
