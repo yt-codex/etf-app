@@ -4,6 +4,7 @@ import argparse
 import sqlite3
 from pathlib import Path
 
+from etf_app.api import run_api_server
 from etf_app import listing_hygiene, listing_ingest, universe_refine
 from etf_app.completeness import generate_completeness_report
 from etf_app.issuer_fee_enrich import run_issuer_fee_backfill
@@ -106,6 +107,19 @@ def build_parser() -> argparse.ArgumentParser:
         action="append",
         default=[],
         help="Optional source key filter; repeatable. Supported: spdr, jpmorgan, invesco, vaneck, bnpparibas",
+    )
+
+    serve_api = subparsers.add_parser(
+        "serve-api",
+        help="Serve a thin JSON API over the SQLite ETF database",
+    )
+    serve_api.add_argument("--db-path", default="stage1_etf.db", help="Path to SQLite DB")
+    serve_api.add_argument("--host", default="127.0.0.1", help="Host interface to bind")
+    serve_api.add_argument("--port", type=int, default=8000, help="Port to listen on")
+    serve_api.add_argument(
+        "--refresh-derived-on-start",
+        action="store_true",
+        help="Refresh product_profile and taxonomy once before serving requests",
     )
 
     recommend = subparsers.add_parser(
@@ -249,6 +263,20 @@ def run_issuer_normalization(db_path: str, only_missing_fees: bool) -> int:
     return 0
 
 
+def run_api(
+    db_path: str,
+    host: str,
+    port: int,
+    refresh_derived_on_start: bool,
+) -> int:
+    return run_api_server(
+        db_path=db_path,
+        host=host,
+        port=port,
+        refresh_derived_on_start=refresh_derived_on_start,
+    )
+
+
 def run_recommend_strategies(
     db_path: str,
     venue: str,
@@ -291,6 +319,13 @@ def main(argv: list[str] | None = None) -> int:
         return run_issuer_normalization(args.db_path, args.only_missing_fees)
     if args.command == "backfill-issuer-fees":
         return run_issuer_fee_enrichment(args.db_path, args.source)
+    if args.command == "serve-api":
+        return run_api(
+            args.db_path,
+            args.host,
+            args.port,
+            args.refresh_derived_on_start,
+        )
     if args.command in {"recommend", "recommend-strategies"}:
         return run_recommend_strategies(
             args.db_path,

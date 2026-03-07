@@ -54,6 +54,11 @@ from etf_app import cli
             ("db.sqlite", ["spdr", "vaneck"]),
         ),
         (
+            ["serve-api", "--db-path", "db.sqlite", "--host", "0.0.0.0", "--port", "9000", "--refresh-derived-on-start"],
+            "run_api",
+            ("db.sqlite", "0.0.0.0", 9000, True),
+        ),
+        (
             ["recommend", "--db-path", "db.sqlite"],
             "run_recommend_strategies",
             ("db.sqlite", "ALL", "USD,EUR,GBP", 5, False, False, "artifacts"),

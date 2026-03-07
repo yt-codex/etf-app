@@ -43,7 +43,26 @@ Generate taxonomy-backed strategy recommendations:
 etf-pipeline recommend --db-path stage1_etf.db
 ```
 
+Serve the thin JSON API for browse/filter/recommend UI work:
+
+```powershell
+etf-pipeline serve-api --db-path stage1_etf.db --host 127.0.0.1 --port 8000
+```
+
 Legacy command names (`patch-data`, `stage1-refresh`, `classify-taxonomy`, `recommend-strategies`) still work.
+
+## API
+
+The API is intentionally thin and SQLite-backed. It uses the existing `product_profile`, `instrument_taxonomy`, completeness, and predefined strategy logic without introducing a web framework dependency.
+
+Available endpoints:
+
+- `/health`
+- `/api/funds`
+- `/api/funds/{isin}`
+- `/api/filters`
+- `/api/strategies`
+- `/api/completeness`
 
 ## Repo layout
 
