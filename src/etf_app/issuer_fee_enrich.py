@@ -41,6 +41,15 @@ SUPPORTED_SOURCES: tuple[IssuerFeeSource, ...] = (
         ),
         source_name="jpm_etf_product_list_pdf",
     ),
+    IssuerFeeSource(
+        key="vaneck",
+        issuer_names=("VanEck",),
+        source_url=(
+            "https://www.vaneck.com/globalassets/home/media/managedassets/etf-europe/library/uploads/"
+            "vaneck-product-list-uk.pdf"
+        ),
+        source_name="vaneck_product_list_pdf",
+    ),
 )
 
 
@@ -201,7 +210,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         "--source",
         action="append",
         default=[],
-        help="Optional source key filter; repeatable. Supported: spdr, jpmorgan",
+        help="Optional source key filter; repeatable. Supported: spdr, jpmorgan, vaneck",
     )
     args = parser.parse_args(argv)
     results = run_issuer_fee_backfill(args.db_path, args.source)

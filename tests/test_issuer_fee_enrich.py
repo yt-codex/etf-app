@@ -32,8 +32,23 @@ def test_find_fee_after_isin_handles_jpm_product_list_text() -> None:
     assert fee == 0.25
 
 
+def test_find_fee_after_isin_handles_vaneck_product_list_text() -> None:
+    text = (
+        "VanEck Rare Earth and Strategic Metals UCITS ETF IE0002PG6CA6 "
+        "LSE LSE XETRA Borsa Italiana SIX USD GBP EUR EUR CHF USD USD USD USD USD 0.59% Physical"
+    )
+
+    fee, _ = find_fee_after_isin(text, "IE0002PG6CA6")
+
+    assert fee == 0.59
+
+
 def test_normalize_source_keys_defaults_to_all_supported_sources() -> None:
     assert normalize_source_keys([]) == [source.key for source in SUPPORTED_SOURCES]
+
+
+def test_normalize_source_keys_accepts_new_vaneck_source() -> None:
+    assert normalize_source_keys(["vaneck", "spdr"]) == ["vaneck", "spdr"]
 
 
 def test_apply_fee_map_inserts_latest_fee_snapshot() -> None:

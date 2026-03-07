@@ -44,9 +44,14 @@ from etf_app import cli
             ("db.sqlite", "artifacts", "ALL", "USD,EUR,GBP", 5, False, False),
         ),
         (
-            ["backfill-issuer-fees", "--db-path", "db.sqlite", "--source", "spdr", "--source", "jpmorgan"],
+            ["normalize-issuers", "--db-path", "db.sqlite", "--only-missing-fees"],
+            "run_issuer_normalization",
+            ("db.sqlite", True),
+        ),
+        (
+            ["backfill-issuer-fees", "--db-path", "db.sqlite", "--source", "spdr", "--source", "vaneck"],
             "run_issuer_fee_enrichment",
-            ("db.sqlite", ["spdr", "jpmorgan"]),
+            ("db.sqlite", ["spdr", "vaneck"]),
         ),
         (
             ["recommend", "--db-path", "db.sqlite"],

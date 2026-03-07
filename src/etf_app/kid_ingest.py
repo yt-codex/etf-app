@@ -64,6 +64,10 @@ DOMAIN_HINTS_BY_ISSUER = {
     "First Trust": ["ftglobalportfolios.com", "firsttrust.com"],
     "Fidelity": ["fidelityinternational.com", "fidelity.com"],
     "Global X": ["globalxetfs.com"],
+    "BNP Paribas": ["assetmanagement.bnpparibas.com", "easy.bnpparibas.com", "bnpparibas-am.com"],
+    "OSSIAM": ["ossiam.com"],
+    "Deka": ["deka-etf.de", "deka.de"],
+    "EXPAT ASSET MANAGEMENT EAD": ["expat.bg"],
 }
 
 DOMAIN_TO_ISSUER = [
@@ -93,6 +97,13 @@ DOMAIN_TO_ISSUER = [
     ("fidelity.com", "Fidelity"),
     ("fidelityinternational.com", "Fidelity"),
     ("globalxetfs.com", "Global X"),
+    ("assetmanagement.bnpparibas.com", "BNP Paribas"),
+    ("easy.bnpparibas.com", "BNP Paribas"),
+    ("bnpparibas-am.com", "BNP Paribas"),
+    ("ossiam.com", "OSSIAM"),
+    ("deka-etf.de", "Deka"),
+    ("deka.de", "Deka"),
+    ("expat.bg", "EXPAT ASSET MANAGEMENT EAD"),
 ]
 
 PRIORITY_ISSUERS = {
