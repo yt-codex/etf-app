@@ -172,7 +172,8 @@ st.markdown(
     .browser-table tbody tr:hover td, .strategy-table tbody tr:hover td { background: rgba(33,69,63,0.08); }
     .strategy-grid-head {
         font-size: 0.72rem; letter-spacing: 0.1em; text-transform: uppercase; color: #67746f;
-        font-weight: 600; padding: 0.2rem 0 0.35rem 0; white-space: nowrap;
+        font-weight: 600; padding: 0.2rem 0 0.35rem 0; white-space: pre-line; line-height: 1.2; min-height: 2rem;
+        display: flex; align-items: flex-end;
     }
     .strategy-grid-cell {
         min-height: 2.1rem; display: flex; align-items: center; color: var(--ink);
@@ -508,9 +509,13 @@ def _strategy_bucket_asset_label(bucket_name: str, selected_row: Optional[dict[s
 def _strategy_candidate_label(row: dict[str, object]) -> str:
     ticker = _normalized_known_text(row.get("ticker"))
     venue = _normalized_known_text(row.get("primary_venue"))
-    if ticker and venue:
-        return f"{ticker} · {venue}"
-    return ticker or venue or str(row.get("ISIN") or "")
+    fee = _format_percentage(row.get("ongoing_charges"))
+    parts = [part for part in (ticker, venue) if part]
+    if fee:
+        parts.append(f"TER {fee}")
+    if parts:
+        return " · ".join(parts)
+    return str(row.get("ISIN") or "")
 
 
 def _strategy_cell(value: str, *, muted: bool = False) -> str:
@@ -544,8 +549,8 @@ def _render_strategy_bucket_table(strategy: dict[str, object]) -> list[dict[str,
     header_labels = [
         "Bucket",
         "Target",
-        "Funds shown",
-        "ASSET TYPE",
+        "Funds\navailable",
+        "ASSET\nTYPE",
         "Fund ticker",
         "ISIN",
         "Fund name",
@@ -559,7 +564,7 @@ def _render_strategy_bucket_table(strategy: dict[str, object]) -> list[dict[str,
         "Bond type",
         "Duration",
     ]
-    column_widths = [1.45, 0.72, 0.78, 0.95, 1.6, 1.25, 2.5, 1.08, 0.9, 0.82, 1.0, 0.95, 0.8, 0.8, 1.0, 0.9]
+    column_widths = [1.45, 0.72, 1.0, 1.05, 1.8, 1.25, 2.5, 1.08, 0.9, 0.82, 1.0, 0.95, 0.8, 0.8, 1.0, 0.9]
     header_cols = st.columns(column_widths, gap="small")
     for col, label in zip(header_cols, header_labels):
         col.markdown(f"<div class='strategy-grid-head'>{_escape(label)}</div>", unsafe_allow_html=True)
@@ -867,7 +872,7 @@ elif active_view == "Strategies":
             """,
             unsafe_allow_html=True,
         )
-        st.caption("Funds shown are unbounded in the UI: each sleeve includes every ranked candidate returned by the final bucket filter.")
+        st.caption("Funds available are unbounded in the UI: each sleeve includes every ranked candidate returned by the final bucket filter.")
         weighted_ter_slot = st.empty()
         selected_rows = _render_strategy_bucket_table(selected_strategy)
         weighted_ter, covered_weight, total_weight = _weighted_strategy_ter(selected_rows)

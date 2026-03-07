@@ -162,6 +162,35 @@ def test_extract_ft_search_symbols_keeps_unique_etf_summary_symbols() -> None:
     ]
 
 
+def test_load_targets_can_filter_by_ticker_or_isin(tmp_path) -> None:
+    db_path = make_db(tmp_path)
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    conn.execute(
+        """
+        INSERT INTO instrument(
+            instrument_id, isin, instrument_name, instrument_type, status, universe_mvp_flag, ucits_flag, ucits_source
+        ) VALUES (2, 'LU1829221024', 'Amundi Core Nasdaq-100 Swap UCITS ETF Acc', 'ETF', 'active', 1, 1, 'legacy_seed')
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO listing(
+            listing_id, instrument_id, venue_mic, ticker, trading_currency, primary_flag, status
+        ) VALUES (2, 2, 'XLON', 'NASD', 'USD', 1, 'active')
+        """
+    )
+    conn.commit()
+
+    ticker_rows = ft_enrich.load_targets(conn, limit=10, venue="ALL", tickers=["nasd"])
+    isin_rows = ft_enrich.load_targets(conn, limit=10, venue="ALL", isins=["ie00b5bmr087"])
+
+    conn.close()
+
+    assert [int(row["instrument_id"]) for row in ticker_rows] == [2]
+    assert [int(row["instrument_id"]) for row in isin_rows] == [1]
+
+
 def test_resolve_symbol_uses_search_fallback_when_direct_symbols_fail(tmp_path, monkeypatch) -> None:
     db_path = make_db(tmp_path)
     conn = sqlite3.connect(db_path)

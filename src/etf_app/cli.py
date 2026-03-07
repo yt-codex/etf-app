@@ -128,6 +128,24 @@ def build_parser() -> argparse.ArgumentParser:
         default=0.0,
         help="Optional delay between resolved FT fetches",
     )
+    ft_metadata.add_argument(
+        "--ticker",
+        action="append",
+        default=[],
+        help="Optional ticker filter; repeatable and matched case-insensitively",
+    )
+    ft_metadata.add_argument(
+        "--isin",
+        action="append",
+        default=[],
+        help="Optional ISIN filter; repeatable and matched case-insensitively",
+    )
+    ft_metadata.add_argument(
+        "--commit-every",
+        type=int,
+        default=0,
+        help="Flush product_profile/taxonomy and commit every N resolved FT snapshots",
+    )
 
     serve_api = subparsers.add_parser(
         "serve-api",
@@ -264,12 +282,23 @@ def run_issuer_fee_enrichment(db_path: str, source: list[str]) -> int:
     return 0
 
 
-def run_ft_enrichment(db_path: str, limit: int, venue: str, sleep_seconds: float) -> int:
+def run_ft_enrichment(
+    db_path: str,
+    limit: int,
+    venue: str,
+    sleep_seconds: float,
+    tickers: list[str],
+    isins: list[str],
+    commit_every: int,
+) -> int:
     stats = run_ft_metadata_backfill(
         db_path=db_path,
         limit=limit,
         venue=venue,
         sleep_seconds=sleep_seconds,
+        tickers=tickers,
+        isins=isins,
+        commit_every=max(0, int(commit_every)),
     )
     print(
         f"ft metadata backfill: attempted={stats.attempted} resolved={stats.resolved} "
@@ -357,7 +386,15 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "backfill-issuer-fees":
         return run_issuer_fee_enrichment(args.db_path, args.source)
     if args.command == "backfill-ft-metadata":
-        return run_ft_enrichment(args.db_path, args.limit, args.venue, args.sleep_seconds)
+        return run_ft_enrichment(
+            args.db_path,
+            args.limit,
+            args.venue,
+            args.sleep_seconds,
+            args.ticker,
+            args.isin,
+            args.commit_every,
+        )
     if args.command == "serve-api":
         return run_api(
             args.db_path,
@@ -376,3 +413,7 @@ def main(argv: list[str] | None = None) -> int:
             args.artifacts_dir,
         )
     raise SystemExit(f"Unknown command: {args.command}")
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

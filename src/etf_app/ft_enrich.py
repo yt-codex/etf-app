@@ -60,6 +60,18 @@ def venue_scope(arg: str) -> list[str]:
     return list(SUPPORTED_VENUES)
 
 
+def normalize_identifier_values(values: Optional[list[str]]) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for value in values or []:
+        normalized = normalize_space(value).upper()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        out.append(normalized)
+    return out
+
+
 def table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
     row = conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table' AND name = ?",
@@ -100,12 +112,44 @@ def ensure_tables(conn: sqlite3.Connection) -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_instrument_url_map_instrument ON instrument_url_map(instrument_id)")
 
 
-def load_targets(conn: sqlite3.Connection, limit: int, venue: str) -> list[sqlite3.Row]:
+def load_targets(
+    conn: sqlite3.Connection,
+    limit: int,
+    venue: str,
+    *,
+    tickers: Optional[list[str]] = None,
+    isins: Optional[list[str]] = None,
+) -> list[sqlite3.Row]:
     venues = venue_scope(venue)
+    normalized_tickers = normalize_identifier_values(tickers)
+    normalized_isins = normalize_identifier_values(isins)
     placeholders = ",".join("?" for _ in venues)
     taxonomy_join = ""
     taxonomy_filter = ""
     taxonomy_order = ""
+    identifier_filter = ""
+    identifier_params: list[object] = []
+    identifier_clauses: list[str] = []
+    if normalized_isins:
+        isin_placeholders = ",".join("?" for _ in normalized_isins)
+        identifier_clauses.append(f"UPPER(i.isin) IN ({isin_placeholders})")
+        identifier_params.extend(normalized_isins)
+    if normalized_tickers:
+        ticker_placeholders = ",".join("?" for _ in normalized_tickers)
+        identifier_clauses.append(
+            f"""
+            EXISTS (
+                SELECT 1
+                FROM listing lf
+                WHERE lf.instrument_id = i.instrument_id
+                  AND COALESCE(lf.status, 'active') = 'active'
+                  AND UPPER(TRIM(lf.ticker)) IN ({ticker_placeholders})
+            )
+            """
+        )
+        identifier_params.extend(normalized_tickers)
+    if identifier_clauses:
+        identifier_filter = f"\n          AND ({' OR '.join(identifier_clauses)})"
     if table_exists(conn, "instrument_taxonomy"):
         taxonomy_join = "LEFT JOIN instrument_taxonomy t ON t.instrument_id = i.instrument_id"
         taxonomy_filter = """
@@ -164,6 +208,7 @@ def load_targets(conn: sqlite3.Connection, limit: int, venue: str) -> list[sqlit
         WHERE COALESCE(i.universe_mvp_flag, 0) = 1
           AND COALESCE(i.status, 'active') = 'active'
           AND UPPER(COALESCE(i.instrument_type, '')) = 'ETF'
+          {identifier_filter}
           AND (
               p.instrument_id IS NULL
               OR p.distribution_policy IS NULL
@@ -184,7 +229,7 @@ def load_targets(conn: sqlite3.Connection, limit: int, venue: str) -> list[sqlit
             i.isin
         LIMIT ?
     """
-    params: list[object] = [*venues, limit]
+    params: list[object] = [*venues, *identifier_params, limit]
     return conn.execute(sql, params).fetchall()
 
 
@@ -702,12 +747,22 @@ def resolve_symbol(
     return None, None, {}
 
 
+def flush_derived_tables(conn: sqlite3.Connection, stats: FtBackfillStats) -> None:
+    profile_stats = refresh_product_profile(conn)
+    stats.profile_rows_upserted = profile_stats.product_profile_rows_upserted
+    stats.taxonomy_rows_updated = upsert_taxonomy(conn, load_universe_rows(conn))
+    conn.commit()
+
+
 def run_ft_metadata_backfill(
     *,
     db_path: str,
     limit: int,
     venue: str,
     sleep_seconds: float,
+    tickers: Optional[list[str]] = None,
+    isins: Optional[list[str]] = None,
+    commit_every: int = 0,
 ) -> FtBackfillStats:
     conn = sqlite3.connect(str(Path(db_path)))
     conn.row_factory = sqlite3.Row
@@ -718,7 +773,8 @@ def run_ft_metadata_backfill(
         ensure_tables(conn)
 
         session = build_session()
-        targets = load_targets(conn, limit=limit, venue=venue)
+        targets = load_targets(conn, limit=limit, venue=venue, tickers=tickers, isins=isins)
+        pending_flush = 0
         for row in targets:
             stats.attempted += 1
             instrument_id = int(row["instrument_id"])
@@ -783,14 +839,16 @@ def run_ft_metadata_backfill(
             upsert_url_map(conn, instrument_id, "ft_summary_page", summary_page_url)
             upsert_url_map(conn, instrument_id, "ft_holdings_page", holdings_page_url)
             stats.snapshots_inserted += 1
+            pending_flush += 1
+
+            if commit_every > 0 and pending_flush >= commit_every:
+                flush_derived_tables(conn, stats)
+                pending_flush = 0
 
             if sleep_seconds > 0:
                 time.sleep(sleep_seconds)
 
-        profile_stats = refresh_product_profile(conn)
-        stats.profile_rows_upserted = profile_stats.product_profile_rows_upserted
-        stats.taxonomy_rows_updated = upsert_taxonomy(conn, load_universe_rows(conn))
-        conn.commit()
+        flush_derived_tables(conn, stats)
         return stats
     except Exception:
         conn.rollback()
@@ -815,6 +873,24 @@ def build_parser() -> argparse.ArgumentParser:
         default=0.0,
         help="Optional delay between resolved FT fetches",
     )
+    parser.add_argument(
+        "--ticker",
+        action="append",
+        default=[],
+        help="Optional ticker filter; repeatable and matched case-insensitively",
+    )
+    parser.add_argument(
+        "--isin",
+        action="append",
+        default=[],
+        help="Optional ISIN filter; repeatable and matched case-insensitively",
+    )
+    parser.add_argument(
+        "--commit-every",
+        type=int,
+        default=0,
+        help="Flush product_profile/taxonomy and commit every N resolved FT snapshots (0 means only at the end)",
+    )
     return parser
 
 
@@ -825,6 +901,9 @@ def main(argv: list[str] | None = None) -> int:
         limit=args.limit,
         venue=args.venue,
         sleep_seconds=args.sleep_seconds,
+        tickers=args.ticker,
+        isins=args.isin,
+        commit_every=max(0, int(args.commit_every)),
     )
     print(
         f"ft metadata backfill: attempted={stats.attempted} resolved={stats.resolved} "
@@ -834,3 +913,7 @@ def main(argv: list[str] | None = None) -> int:
         f"taxonomy_rows_updated={stats.taxonomy_rows_updated}"
     )
     return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
