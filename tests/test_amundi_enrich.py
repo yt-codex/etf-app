@@ -3,7 +3,14 @@ from __future__ import annotations
 import json
 import sqlite3
 
+import pytest
+
+import etf_app.amundi_enrich as amundi_enrich
 from etf_app.amundi_enrich import (
+    DownloadResult,
+    FactsheetCandidate,
+    KidFallbackResult,
+    ProbeResult,
     build_amundi_kid_candidate_urls,
     build_factsheet_candidates,
     ensure_tables_and_view,
@@ -273,6 +280,109 @@ def test_load_targets_includes_fee_complete_rows_with_missing_profile_metadata()
     rows = load_targets(conn, limit=10, venue="ALL")
 
     assert [int(row["instrument_id"]) for row in rows] == [1]
+
+
+def test_main_commits_successful_rows_before_later_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    db_path = tmp_path / "amundi.sqlite"
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    conn.executescript(
+        """
+        CREATE TABLE cost_snapshot(
+            cost_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            instrument_id INTEGER,
+            asof_date TEXT,
+            ongoing_charges REAL NULL,
+            entry_costs REAL NULL,
+            exit_costs REAL NULL,
+            transaction_costs REAL NULL,
+            doc_id INTEGER,
+            quality_flag TEXT,
+            raw_json TEXT
+        );
+        """
+    )
+    ensure_tables_and_view(conn)
+    conn.close()
+
+    rows = [
+        {"instrument_id": 1, "isin": "LU0000000001", "ticker": "AAA", "instrument_name": "Amundi AAA"},
+        {"instrument_id": 2, "isin": "LU0000000002", "ticker": "BBB", "instrument_name": "Amundi BBB"},
+    ]
+
+    monkeypatch.setattr(amundi_enrich, "load_targets", lambda conn, limit, venue: rows)
+    monkeypatch.setattr(amundi_enrich, "load_existing_factsheet_urls", lambda conn, instrument_ids: {})
+    monkeypatch.setattr(amundi_enrich, "discover_monthly_factsheet_urls", lambda client, isins: {})
+    monkeypatch.setattr(
+        amundi_enrich,
+        "build_factsheet_candidates",
+        lambda isin, discovered=None, known_url=None: [
+            FactsheetCandidate(url=f"https://example.com/{isin}.pdf", source="test")
+        ],
+    )
+    monkeypatch.setattr(
+        amundi_enrich,
+        "probe_pdf_url",
+        lambda client, url: ProbeResult(
+            accepted=True,
+            reason="ok",
+            status_code=200,
+            content_type="application/pdf",
+            final_url=url,
+            method="HEAD",
+            first_bytes_hex=None,
+        ),
+    )
+    monkeypatch.setattr(
+        amundi_enrich,
+        "download_pdf",
+        lambda client, url, cache_dir: DownloadResult(
+            success=True,
+            pdf_bytes=url.encode("utf-8"),
+            final_url=url,
+            from_cache=False,
+            error=None,
+            cache_path=None,
+            http_status=200,
+            content_type="application/pdf",
+        ),
+    )
+
+    def fake_parse(pdf_bytes: bytes) -> dict[str, object]:
+        text = pdf_bytes.decode("utf-8")
+        if "LU0000000002" in text:
+            raise RuntimeError("boom")
+        return {
+            "ter": 0.12,
+            "use_of_income": "Accumulating",
+            "ucits_compliant": 1,
+            "benchmark_name": None,
+            "asset_class_hint": None,
+            "domicile_country": None,
+            "replication_method": None,
+            "hedged_flag": None,
+            "hedged_target": None,
+        }
+
+    monkeypatch.setattr(amundi_enrich, "parse_factsheet_pdf", fake_parse)
+    monkeypatch.setattr(
+        amundi_enrich,
+        "try_amundi_kid_fallback",
+        lambda client, cache_dir, isin: KidFallbackResult(False, None, None, []),
+    )
+    monkeypatch.setattr(amundi_enrich, "maybe_update_product_profile", lambda conn, instrument_id, use_of_income: False)
+
+    with pytest.raises(RuntimeError):
+        amundi_enrich.main(["--db-path", str(db_path), "--limit", "2"])
+
+    verify = sqlite3.connect(db_path)
+    assert verify.execute("SELECT COUNT(*) FROM cost_snapshot").fetchone()[0] == 1
+    assert verify.execute("SELECT COUNT(*) FROM issuer_metadata_snapshot").fetchone()[0] == 1
+    assert verify.execute("SELECT COUNT(*) FROM instrument_url_map").fetchone()[0] == 1
+    verify.close()
 
 
 def test_insert_cost_snapshot_from_ter_stores_profile_metadata() -> None:

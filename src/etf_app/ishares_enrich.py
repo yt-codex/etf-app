@@ -942,14 +942,13 @@ def main(argv: list[str]) -> int:
     profile_updates = 0
 
     try:
-        conn.execute("BEGIN")
         ensure_tables_and_view(conn)
+        conn.commit()
 
         targets = load_targets(conn, args.limit, args.venue)
         attempted = len(targets)
         log(f"Target iShares subset loaded: {attempted} rows (venue={args.venue}, limit={args.limit})")
         if attempted == 0:
-            conn.commit()
             print_kpis(0, 0, 0, 0, 0)
             print("\nNo instruments eligible for Stage 2.4 (already fee-complete or not iShares subset).")
             return 0
@@ -991,6 +990,7 @@ def main(argv: list[str]) -> int:
                         break
 
             if not product_url:
+                conn.execute("BEGIN")
                 insert_issuer_metadata_snapshot(
                     conn,
                     instrument_id=instrument_id,
@@ -1002,12 +1002,12 @@ def main(argv: list[str]) -> int:
                     quality_flag="no_url",
                     raw_json=debug,
                 )
+                conn.commit()
                 if idx % 25 == 0:
                     log(f"Processed {idx}/{attempted}: no_url")
                 continue
 
             mapped += 1
-            upsert_instrument_url_map(conn, instrument_id, product_url)
 
             html = debug.get("verified_html") if isinstance(debug.get("verified_html"), str) else None
             fetch_result: Optional[HttpResult] = None
@@ -1017,6 +1017,8 @@ def main(argv: list[str]) -> int:
                 debug["page_fetch_content_type"] = fetch_result.content_type
                 debug["page_fetch_error"] = fetch_result.error
                 if not fetch_result.ok or not fetch_result.text:
+                    conn.execute("BEGIN")
+                    upsert_instrument_url_map(conn, instrument_id, product_url)
                     insert_issuer_metadata_snapshot(
                         conn,
                         instrument_id=instrument_id,
@@ -1028,6 +1030,7 @@ def main(argv: list[str]) -> int:
                         quality_flag="fail",
                         raw_json=debug,
                     )
+                    conn.commit()
                     if idx % 25 == 0:
                         log(f"Processed {idx}/{attempted}: fetch_fail")
                     continue
@@ -1060,6 +1063,8 @@ def main(argv: list[str]) -> int:
                 "facts_keys": sorted(list((parsed_payload.get("facts") or {}).keys()))[:30],
             }
 
+            conn.execute("BEGIN")
+            upsert_instrument_url_map(conn, instrument_id, product_url)
             quality = "ok" if ter is not None else "parse_fail"
             if ter is not None:
                 parsed += 1
@@ -1106,14 +1111,13 @@ def main(argv: list[str]) -> int:
                 quality_flag=quality,
                 raw_json=debug,
             )
+            conn.commit()
 
             if idx % 25 == 0:
                 log(
                     f"Processed {idx}/{attempted}: mapped={mapped}, fetched={fetched}, "
                     f"ter_parsed={parsed}, filled={filled}"
                 )
-
-        conn.commit()
     except Exception:
         conn.rollback()
         raise

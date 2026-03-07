@@ -3,7 +3,11 @@ from __future__ import annotations
 import json
 import sqlite3
 
+import pytest
+
+import etf_app.ishares_enrich as ishares_enrich
 from etf_app.ishares_enrich import (
+    HttpResult,
     ensure_tables_and_view,
     insert_cost_snapshot_from_ter,
     load_targets,
@@ -209,3 +213,84 @@ def test_insert_cost_snapshot_from_ter_stores_profile_metadata() -> None:
     assert payload["profile_metadata"]["benchmark_name"] == "MSCI World Index"
     assert payload["profile_metadata"]["replication_method"] == "physical"
     assert payload["profile_metadata"]["hedged_flag"] == 0
+
+
+def test_main_commits_successful_rows_before_later_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    db_path = tmp_path / "ishares.sqlite"
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    conn.executescript(
+        """
+        CREATE TABLE cost_snapshot(
+            cost_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            instrument_id INTEGER,
+            asof_date TEXT,
+            ongoing_charges REAL NULL,
+            entry_costs REAL NULL,
+            exit_costs REAL NULL,
+            transaction_costs REAL NULL,
+            doc_id INTEGER,
+            quality_flag TEXT,
+            raw_json TEXT
+        );
+        """
+    )
+    ensure_tables_and_view(conn)
+    conn.close()
+
+    rows = [
+        {"instrument_id": 1, "isin": "IE00TEST0001", "ticker": "AAA", "instrument_name": "iShares AAA"},
+        {"instrument_id": 2, "isin": "IE00TEST0002", "ticker": "BBB", "instrument_name": "iShares BBB"},
+    ]
+
+    class FakeClient:
+        def __init__(self, rate_limit: float, timeout: int, max_retries: int) -> None:
+            pass
+
+        def get(self, url: str, *, params=None) -> HttpResult:
+            return HttpResult(
+                ok=True,
+                status_code=200,
+                content_type="text/html",
+                text=url,
+                final_url=url,
+                error=None,
+            )
+
+    def fake_parse(html: str) -> dict[str, object]:
+        if "products/2" in html:
+            raise RuntimeError("boom")
+        return {
+            "ter": 0.2,
+            "use_of_income": "Accumulating",
+            "ucits_compliant": 1,
+            "benchmark_name": None,
+            "asset_class_hint": None,
+            "domicile_country": None,
+            "replication_method": None,
+            "hedged_flag": None,
+            "hedged_target": None,
+            "facts": {},
+        }
+
+    monkeypatch.setattr(ishares_enrich, "HttpClient", FakeClient)
+    monkeypatch.setattr(ishares_enrich, "load_targets", lambda conn, limit, venue: rows)
+    monkeypatch.setattr(
+        ishares_enrich,
+        "find_existing_ishares_product_url",
+        lambda conn, instrument_id: f"https://example.com/products/{instrument_id}",
+    )
+    monkeypatch.setattr(ishares_enrich, "maybe_update_product_profile", lambda conn, instrument_id, use_of_income: False)
+    monkeypatch.setattr(ishares_enrich, "parse_ishares_product_page", fake_parse)
+
+    with pytest.raises(RuntimeError):
+        ishares_enrich.main(["--db-path", str(db_path), "--limit", "2", "--reuse-only"])
+
+    verify = sqlite3.connect(db_path)
+    assert verify.execute("SELECT COUNT(*) FROM cost_snapshot").fetchone()[0] == 1
+    assert verify.execute("SELECT COUNT(*) FROM issuer_metadata_snapshot").fetchone()[0] == 1
+    assert verify.execute("SELECT COUNT(*) FROM instrument_url_map").fetchone()[0] == 1
+    verify.close()

@@ -1297,8 +1297,8 @@ def main(argv: list[str]) -> int:
     sample_rows: list[tuple[str, str, str, str, str, str]] = []
 
     try:
-        conn.execute("BEGIN")
         ensure_tables_and_view(conn)
+        conn.commit()
         targets = load_targets(conn, args.limit, args.venue)
         attempted = len(targets)
         existing_urls = load_existing_factsheet_urls(
@@ -1309,7 +1309,6 @@ def main(argv: list[str]) -> int:
         log(f"Target Amundi subset loaded: {attempted} rows (venue={args.venue}, limit={args.limit})")
         log(f"Document API resolved factsheet URLs for {len(discovered_urls)}/{attempted} target instruments")
         if attempted == 0:
-            conn.commit()
             print_kpis(0, 0, 0, 0, 0, 0)
             print("\nNo instruments eligible for Stage 2.5.")
             return 0
@@ -1394,7 +1393,6 @@ def main(argv: list[str]) -> int:
                 }
                 final_url = probe.final_url or selected_candidate.url
                 cost_source_url = final_url
-                upsert_instrument_url_map(conn, instrument_id, final_url)
 
                 dl = download_pdf(client, final_url, cache_dir)
                 debug["download"] = {
@@ -1483,6 +1481,9 @@ def main(argv: list[str]) -> int:
                 distribution_parsed += 1
 
             if not instrument_downloaded or final_url is None:
+                conn.execute("BEGIN")
+                if final_url is not None:
+                    upsert_instrument_url_map(conn, instrument_id, final_url)
                 insert_issuer_metadata_snapshot(
                     conn,
                     instrument_id=instrument_id,
@@ -1494,10 +1495,13 @@ def main(argv: list[str]) -> int:
                     quality_flag="download_fail",
                     raw_json=debug,
                 )
+                conn.commit()
                 if idx % 25 == 0:
                     log(f"Processed {idx}/{attempted}: download_fail")
                 continue
 
+            conn.execute("BEGIN")
+            upsert_instrument_url_map(conn, instrument_id, final_url)
             quality = "ok" if ter is not None else "parse_fail"
             if ter is not None:
                 insert_cost_snapshot_from_ter(
@@ -1544,14 +1548,13 @@ def main(argv: list[str]) -> int:
                 quality_flag=quality,
                 raw_json=debug,
             )
+            conn.commit()
 
             if idx % 25 == 0:
                 log(
                     f"Processed {idx}/{attempted}: url_ok={url_ok}, downloaded={downloaded}, "
                     f"fee_parsed={fee_parsed}, distribution_parsed={distribution_parsed}, filled={filled}"
                 )
-
-        conn.commit()
     except Exception:
         conn.rollback()
         raise
