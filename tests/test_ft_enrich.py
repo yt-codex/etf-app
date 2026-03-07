@@ -41,6 +41,28 @@ HOLDINGS_HTML = """
 """
 
 
+SHARE_CLASS_SIZE_SUMMARY_HTML = """
+<div class="mod-tearsheet-overview__header__name">Example Equity UCITS ETF</div>
+<table class="mod-ui-table mod-ui-table--two-column">
+  <tr><th>Investment style</th><td>Large Blend</td></tr>
+  <tr><th>Use of income</th><td>Distribution</td></tr>
+  <tr><th>Domicile</th><td>Ireland</td></tr>
+  <tr><th>ISIN</th><td>IE00TEST0001</td></tr>
+  <tr><th>Share class size</th><td>2.5 billion USD As of Feb 28, 2026</td></tr>
+  <tr><th>Ongoing charge</th><td>0.12%</td></tr>
+</table>
+"""
+
+
+SEARCH_HTML = """
+<div class="search-results">
+  <a href="/data/etfs/tearsheet/summary?s=SXR8:GER:EUR">iShares Core S&amp;P 500 UCITS ETF USD (Acc)</a>
+  <a href="/data/etfs/tearsheet/summary?s=CSPX:LSE:USD">iShares Core S&amp;P 500 UCITS ETF USD (Acc)</a>
+  <a href="/data/equities/tearsheet/summary?s=NOTETF">Ignore non ETF result</a>
+</div>
+"""
+
+
 def make_db(tmp_path) -> str:
     db_path = tmp_path / "ft.sqlite"
     conn = sqlite3.connect(db_path)
@@ -109,6 +131,19 @@ def test_parse_ft_summary_html_extracts_profile_metadata() -> None:
     assert parsed["equity_style_hint"] == "blend"
 
 
+def test_parse_ft_summary_html_falls_back_to_share_class_size_and_variant_labels() -> None:
+    parsed = ft_enrich.parse_ft_summary_html(SHARE_CLASS_SIZE_SUMMARY_HTML)
+
+    assert parsed["isin"] == "IE00TEST0001"
+    assert parsed["use_of_income"] == "Distributing"
+    assert parsed["fund_size_value"] == 2_500_000_000.0
+    assert parsed["fund_size_currency"] == "USD"
+    assert parsed["fund_size_asof"] == "2026-02-28"
+    assert parsed["fund_size_scope"] == "share_class"
+    assert parsed["equity_size_hint"] == "large"
+    assert parsed["equity_style_hint"] == "blend"
+
+
 def test_parse_ft_holdings_html_extracts_dominant_sector() -> None:
     parsed = ft_enrich.parse_ft_holdings_html(HOLDINGS_HTML)
 
@@ -118,6 +153,45 @@ def test_parse_ft_holdings_html_extracts_dominant_sector() -> None:
         {"label": "Technology", "sector": "technology", "weight": 99.97},
         {"label": "Industrials", "sector": "industrials", "weight": 0.0},
     ]
+
+
+def test_extract_ft_search_symbols_keeps_unique_etf_summary_symbols() -> None:
+    assert ft_enrich.extract_ft_search_symbols(SEARCH_HTML) == [
+        "SXR8:GER:EUR",
+        "CSPX:LSE:USD",
+    ]
+
+
+def test_resolve_symbol_uses_search_fallback_when_direct_symbols_fail(tmp_path, monkeypatch) -> None:
+    db_path = make_db(tmp_path)
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+
+    monkeypatch.setattr(ft_enrich, "build_session", lambda: object())
+
+    def fake_fetch_html(_session, url: str) -> str | None:
+        if url == ft_enrich.summary_url("CSPX:LSE:USD"):
+            return None
+        if url == ft_enrich.search_url("IE00B5BMR087"):
+            return SEARCH_HTML
+        if url == ft_enrich.summary_url("SXR8:GER:EUR"):
+            return SUMMARY_HTML
+        return None
+
+    monkeypatch.setattr(ft_enrich, "fetch_html", fake_fetch_html)
+
+    symbol, summary_html, parsed = ft_enrich.resolve_symbol(
+        conn,
+        object(),
+        instrument_id=1,
+        expected_isin="IE00B5BMR087",
+        venue="ALL",
+    )
+    conn.close()
+
+    assert symbol == "SXR8:GER:EUR"
+    assert summary_html == SUMMARY_HTML
+    assert parsed["isin"] == "IE00B5BMR087"
 
 
 def test_run_ft_metadata_backfill_updates_profile_and_taxonomy(tmp_path, monkeypatch) -> None:

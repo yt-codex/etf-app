@@ -19,7 +19,7 @@ from etf_app.taxonomy import ensure_taxonomy_schema, load_universe_rows, upsert_
 
 
 FT_SOURCE = "ft_tearsheet"
-PARSER_VERSION = "ft_tearsheet_v1"
+PARSER_VERSION = "ft_tearsheet_v2"
 REQUEST_TIMEOUT_SECONDS = 20
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36"
 FT_EXCHANGE_BY_VENUE = {
@@ -166,6 +166,7 @@ def load_targets(conn: sqlite3.Connection, limit: int, venue: str) -> list[sqlit
           AND UPPER(COALESCE(i.instrument_type, '')) = 'ETF'
           AND (
               p.instrument_id IS NULL
+              OR p.distribution_policy IS NULL
               OR p.fund_size_value IS NULL
               OR p.equity_size_hint IS NULL
               OR p.equity_style_hint IS NULL
@@ -174,6 +175,7 @@ def load_targets(conn: sqlite3.Connection, limit: int, venue: str) -> list[sqlit
           )
         ORDER BY
             CASE WHEN p.instrument_id IS NULL THEN 0 ELSE 1 END,
+            CASE WHEN p.distribution_policy IS NULL THEN 0 ELSE 1 END,
             CASE WHEN p.fund_size_value IS NULL THEN 0 ELSE 1 END,
             CASE WHEN p.equity_size_hint IS NULL THEN 0 ELSE 1 END,
             CASE WHEN p.equity_style_hint IS NULL THEN 0 ELSE 1 END,
@@ -233,15 +235,18 @@ def load_symbol_candidates(conn: sqlite3.Connection, instrument_id: int, venue: 
 
 
 def find_existing_url(conn: sqlite3.Connection, instrument_id: int, url_type: str) -> Optional[str]:
-    row = conn.execute(
-        """
-        SELECT url
-        FROM instrument_url_map
-        WHERE instrument_id = ?
-          AND url_type = ?
-        """,
-        (instrument_id, url_type),
-    ).fetchone()
+    try:
+        row = conn.execute(
+            """
+            SELECT url
+            FROM instrument_url_map
+            WHERE instrument_id = ?
+              AND url_type = ?
+            """,
+            (instrument_id, url_type),
+        ).fetchone()
+    except sqlite3.OperationalError:
+        return None
     if row and row["url"]:
         return str(row["url"])
     return None
@@ -262,6 +267,10 @@ def summary_url(symbol: str) -> str:
 
 def holdings_url(symbol: str) -> str:
     return f"https://markets.ft.com/data/etfs/tearsheet/holdings?s={quote(symbol, safe=':')}"
+
+
+def search_url(query: str) -> str:
+    return f"https://markets.ft.com/data/search?query={quote(query, safe='')}"
 
 
 def build_session() -> requests.Session:
@@ -294,7 +303,7 @@ def parse_date_value(value: str) -> Optional[str]:
     for prefix in ("As of ",):
         if text.startswith(prefix):
             text = text[len(prefix):].strip()
-    for fmt in ("%b %d %Y", "%B %d %Y", "%d %b %Y", "%d %B %Y"):
+    for fmt in ("%b %d %Y", "%B %d %Y", "%d %b %Y", "%d %B %Y", "%b %d, %Y", "%B %d, %Y"):
         try:
             return dt.datetime.strptime(text, fmt).date().isoformat()
         except ValueError:
@@ -314,7 +323,11 @@ def parse_percent_value(value: str) -> Optional[float]:
 
 def parse_scaled_amount(value: str) -> Optional[float]:
     text = normalize_space(value)
-    match = re.search(r"([0-9][0-9,]*\.?[0-9]*)\s*(tn|trn|bn|b|mn|m|k)?", text, flags=re.IGNORECASE)
+    match = re.search(
+        r"([0-9][0-9,]*\.?[0-9]*)\s*(tn|trn|trillion|bn|billion|b|mn|million|m|k|thousand)?",
+        text,
+        flags=re.IGNORECASE,
+    )
     if not match:
         return None
     number = match.group(1).replace(",", "")
@@ -326,11 +339,15 @@ def parse_scaled_amount(value: str) -> Optional[float]:
     multiplier = {
         "tn": 1_000_000_000_000.0,
         "trn": 1_000_000_000_000.0,
+        "trillion": 1_000_000_000_000.0,
         "bn": 1_000_000_000.0,
+        "billion": 1_000_000_000.0,
         "b": 1_000_000_000.0,
         "mn": 1_000_000.0,
+        "million": 1_000_000.0,
         "m": 1_000_000.0,
         "k": 1_000.0,
+        "thousand": 1_000.0,
     }.get(suffix, 1.0)
     return base * multiplier
 
@@ -408,6 +425,24 @@ def extract_fact_rows(soup: BeautifulSoup) -> dict[str, BeautifulSoup]:
     return facts
 
 
+def find_fact_cell(
+    facts: dict[str, BeautifulSoup],
+    *labels: str,
+    prefix: str | None = None,
+) -> Optional[BeautifulSoup]:
+    normalized_lookup = {normalize_space(label).lower(): value for label, value in facts.items()}
+    for label in labels:
+        match = normalized_lookup.get(normalize_space(label).lower())
+        if match is not None:
+            return match
+    if prefix is not None:
+        prefix_lower = normalize_space(prefix).lower()
+        for label, value in facts.items():
+            if normalize_space(label).lower().startswith(prefix_lower):
+                return value
+    return None
+
+
 def parse_amount_cell(cell) -> tuple[Optional[float], Optional[str], Optional[str]]:
     text = normalize_space(cell.get_text(" ", strip=True))
     if not text or text == "--":
@@ -415,9 +450,64 @@ def parse_amount_cell(cell) -> tuple[Optional[float], Optional[str], Optional[st
     amount = parse_scaled_amount(text)
     currency_match = re.search(r"\b([A-Z]{3})\b", text)
     currency = currency_match.group(1) if currency_match else None
-    asof_match = re.search(r"As of ([A-Za-z]{3,9} \d{1,2} \d{4})", text)
+    asof_match = re.search(r"As of ([A-Za-z]{3,9} \d{1,2}(?:,)? \d{4})", text)
     asof = parse_date_value(asof_match.group(0)) if asof_match else None
     return amount, currency, asof
+
+
+def extract_ft_search_symbols(html: str) -> list[str]:
+    soup = BeautifulSoup(html, "lxml")
+    symbols: list[str] = []
+    seen: set[str] = set()
+    for link in soup.select('a[href*="/data/etfs/tearsheet/summary?s="]'):
+        href = normalize_space(link.get("href"))
+        if not href:
+            continue
+        symbol = symbol_from_url(href if href.startswith("http") else f"https://markets.ft.com{href}")
+        if symbol is None or symbol in seen:
+            continue
+        seen.add(symbol)
+        symbols.append(symbol)
+    return symbols
+
+
+def load_search_queries(conn: sqlite3.Connection, instrument_id: int, expected_isin: str) -> list[str]:
+    queries: list[str] = []
+    seen: set[str] = set()
+
+    def add_query(value: object) -> None:
+        text = normalize_space(value)
+        if not text or text in seen:
+            return
+        seen.add(text)
+        queries.append(text)
+
+    add_query(expected_isin)
+    row = conn.execute(
+        """
+        SELECT instrument_name
+        FROM instrument
+        WHERE instrument_id = ?
+        """,
+        (instrument_id,),
+    ).fetchone()
+    listing_rows = conn.execute(
+        """
+        SELECT ticker
+        FROM listing
+        WHERE instrument_id = ?
+          AND COALESCE(status, 'active') = 'active'
+          AND ticker IS NOT NULL
+          AND TRIM(ticker) <> ''
+        ORDER BY COALESCE(primary_flag, 0) DESC, listing_id
+        """,
+        (instrument_id,),
+    ).fetchall()
+    for listing_row in listing_rows:
+        add_query(listing_row["ticker"])
+    if row is not None:
+        add_query(row["instrument_name"])
+    return queries
 
 
 def parse_ft_summary_html(html: str) -> dict[str, object]:
@@ -428,7 +518,7 @@ def parse_ft_summary_html(html: str) -> dict[str, object]:
         if soup.select_one(".mod-tearsheet-overview__header__name")
         else ""
     )
-    investment_style_text = facts.get("Investment style (stocks)")
+    investment_style_text = find_fact_cell(facts, "Investment style (stocks)", prefix="Investment style")
     equity_size_hint: Optional[str] = None
     equity_style_hint: Optional[str] = None
     if investment_style_text is not None:
@@ -438,17 +528,33 @@ def parse_ft_summary_html(html: str) -> dict[str, object]:
                 equity_size_hint = normalize_equity_size(text.split(":", 1)[1])
             elif text.lower().startswith("investment style:"):
                 equity_style_hint = normalize_equity_style(text.split(":", 1)[1])
+        flat_style_text = normalize_space(investment_style_text.get_text(" ", strip=True))
+        if equity_size_hint is None:
+            equity_size_hint = normalize_equity_size(flat_style_text)
+        if equity_style_hint is None:
+            equity_style_hint = normalize_equity_style(flat_style_text)
 
     fund_size_value: Optional[float] = None
     fund_size_currency: Optional[str] = None
     fund_size_asof: Optional[str] = None
-    if (fund_size_cell := facts.get("Fund size")) is not None:
+    fund_size_scope: Optional[str] = None
+    if (fund_size_cell := find_fact_cell(facts, "Fund size", prefix="Fund size")) is not None:
         fund_size_value, fund_size_currency, fund_size_asof = parse_amount_cell(fund_size_cell)
+        if fund_size_value is not None:
+            fund_size_scope = "fund"
+    if fund_size_value is None and (share_class_size_cell := find_fact_cell(facts, "Share class size", prefix="Share class size")) is not None:
+        fund_size_value, fund_size_currency, fund_size_asof = parse_amount_cell(share_class_size_cell)
+        if fund_size_value is not None:
+            fund_size_scope = "share_class"
 
-    ongoing_charge = parse_percent_value(facts["Ongoing charge"].get_text(" ", strip=True)) if "Ongoing charge" in facts else None
-    income_treatment = normalize_income_treatment(facts["Income treatment"].get_text(" ", strip=True)) if "Income treatment" in facts else None
-    domicile_country = normalize_space(facts["Domicile"].get_text(" ", strip=True)) if "Domicile" in facts else None
-    isin = normalize_space(facts["ISIN"].get_text(" ", strip=True)) if "ISIN" in facts else None
+    ongoing_charge_cell = find_fact_cell(facts, "Ongoing charge", prefix="Ongoing charge")
+    ongoing_charge = parse_percent_value(ongoing_charge_cell.get_text(" ", strip=True)) if ongoing_charge_cell is not None else None
+    income_cell = find_fact_cell(facts, "Income treatment", "Use of income", prefix="Income")
+    income_treatment = normalize_income_treatment(income_cell.get_text(" ", strip=True)) if income_cell is not None else None
+    domicile_cell = find_fact_cell(facts, "Domicile", prefix="Domicile")
+    domicile_country = normalize_space(domicile_cell.get_text(" ", strip=True)) if domicile_cell is not None else None
+    isin_cell = find_fact_cell(facts, "ISIN", prefix="ISIN")
+    isin = normalize_space(isin_cell.get_text(" ", strip=True)) if isin_cell is not None else None
     ucits_compliant = 1 if "UCITS" in instrument_name.upper() else None
 
     parsed: dict[str, object] = {
@@ -462,7 +568,7 @@ def parse_ft_summary_html(html: str) -> dict[str, object]:
         "fund_size_value": fund_size_value,
         "fund_size_currency": fund_size_currency,
         "fund_size_asof": fund_size_asof,
-        "fund_size_scope": "fund" if fund_size_value is not None else None,
+        "fund_size_scope": fund_size_scope,
         "equity_size_hint": equity_size_hint,
         "equity_style_hint": equity_style_hint,
     }
@@ -566,14 +672,33 @@ def resolve_symbol(
     expected_isin: str,
     venue: str,
 ) -> tuple[Optional[str], Optional[str], dict[str, object]]:
-    for symbol in load_symbol_candidates(conn, instrument_id, venue):
+    attempted_symbols: set[str] = set()
+
+    def try_symbol(symbol: str) -> tuple[Optional[str], Optional[str], dict[str, object]]:
+        if symbol in attempted_symbols:
+            return None, None, {}
+        attempted_symbols.add(symbol)
         html = fetch_html(session, summary_url(symbol))
         if html is None:
-            continue
+            return None, None, {}
         parsed = parse_ft_summary_html(html)
         if normalize_space(parsed.get("isin")) != expected_isin:
-            continue
+            return None, None, {}
         return symbol, html, parsed
+
+    for symbol in load_symbol_candidates(conn, instrument_id, venue):
+        matched_symbol, html, parsed = try_symbol(symbol)
+        if matched_symbol is not None:
+            return matched_symbol, html, parsed
+
+    for query in load_search_queries(conn, instrument_id, expected_isin):
+        search_html = fetch_html(session, search_url(query))
+        if search_html is None:
+            continue
+        for symbol in extract_ft_search_symbols(search_html):
+            matched_symbol, html, parsed = try_symbol(symbol)
+            if matched_symbol is not None:
+                return matched_symbol, html, parsed
     return None, None, {}
 
 
@@ -647,7 +772,7 @@ def run_ft_metadata_backfill(
             insert_issuer_metadata_snapshot(
                 conn,
                 instrument_id=instrument_id,
-                asof_date=today_iso(),
+                asof_date=str(summary_parsed.get("fund_size_asof") or today_iso()),
                 source_url=summary_page_url,
                 ter=summary_parsed.get("ter"),
                 use_of_income=summary_parsed.get("use_of_income"),

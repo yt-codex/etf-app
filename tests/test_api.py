@@ -225,6 +225,7 @@ def test_api_endpoints_expose_filters_completeness_and_strategies(tmp_path) -> N
     all_weather = next(item for item in strategy_payload["strategies"] if item["name"] == "Ray Dalio All Weather Portfolio")
     assert all_weather["rows"]
     assert isinstance(all_weather["rows"][0]["selection_reason"], dict)
+    assert "fund_size_value" in all_weather["rows"][0]
 
     status, _headers, filtered_strategy_payload = call_json(
         app,

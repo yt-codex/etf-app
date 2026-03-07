@@ -518,31 +518,55 @@ def _strategy_cell(value: str, *, muted: bool = False) -> str:
     return f"<div class='{css_class}'>{_escape(value)}</div>"
 
 
-def _render_strategy_bucket_table(strategy: dict[str, object]) -> None:
+def _weighted_strategy_ter(rows: list[dict[str, object]]) -> tuple[Optional[float], float, float]:
+    weighted_total = 0.0
+    covered_weight = 0.0
+    total_weight = 0.0
+    for row in rows:
+        try:
+            target_weight = float(row.get("target_weight") or 0.0)
+        except (TypeError, ValueError):
+            continue
+        total_weight += target_weight
+        fee = row.get("ongoing_charges")
+        try:
+            fee_value = float(fee)
+        except (TypeError, ValueError):
+            continue
+        weighted_total += target_weight * fee_value
+        covered_weight += target_weight
+    if covered_weight <= 0:
+        return None, covered_weight, total_weight
+    return weighted_total / covered_weight, covered_weight, total_weight
+
+
+def _render_strategy_bucket_table(strategy: dict[str, object]) -> list[dict[str, object]]:
     header_labels = [
         "Bucket",
         "Target",
         "Funds shown",
-        "Asset type",
+        "ASSET TYPE",
         "Fund ticker",
         "ISIN",
         "Fund name",
         "Distribution",
         "Currency",
         "TER",
+        "Fund size",
         "Region",
         "Size",
         "Style",
         "Bond type",
         "Duration",
     ]
-    column_widths = [1.45, 0.72, 0.78, 0.9, 1.6, 1.25, 2.4, 1.1, 0.9, 0.82, 1.0, 0.8, 0.8, 1.0, 0.9]
+    column_widths = [1.45, 0.72, 0.78, 0.95, 1.6, 1.25, 2.5, 1.08, 0.9, 0.82, 1.0, 0.95, 0.8, 0.8, 1.0, 0.9]
     header_cols = st.columns(column_widths, gap="small")
     for col, label in zip(header_cols, header_labels):
         col.markdown(f"<div class='strategy-grid-head'>{_escape(label)}</div>", unsafe_allow_html=True)
 
     grouped_rows = _group_strategy_rows(list(strategy.get("rows") or []))
     strategy_slug = str(strategy.get("slug") or strategy.get("name") or "strategy")
+    selected_rows: list[dict[str, object]] = []
 
     for bucket in strategy["buckets"]:
         bucket_name = str(bucket["bucket_name"])
@@ -589,6 +613,7 @@ def _render_strategy_bucket_table(strategy: dict[str, object]) -> None:
             _display_value(_format_distribution(selected_row.get("distribution_policy"))) if selected_row else MISSING_DISPLAY,
             _display_value(_normalized_known_text(selected_row.get("currency"))) if selected_row else MISSING_DISPLAY,
             _display_value(_format_percentage(selected_row.get("ongoing_charges"))) if selected_row else MISSING_DISPLAY,
+            _display_value(_format_fund_size(selected_row.get("fund_size_value"), selected_row.get("fund_size_currency"))) if selected_row else MISSING_DISPLAY,
             _region_label(item) if selected_row else MISSING_DISPLAY,
             _equity_size_label(item) if selected_row else MISSING_DISPLAY,
             _equity_style_label(item) if selected_row else MISSING_DISPLAY,
@@ -597,7 +622,10 @@ def _render_strategy_bucket_table(strategy: dict[str, object]) -> None:
         ]
         for col, value in zip(row_cols[5:], detail_values):
             col.markdown(_strategy_cell(value, muted=value == MISSING_DISPLAY), unsafe_allow_html=True)
+        if selected_row is not None:
+            selected_rows.append({**selected_row, "target_weight": float(bucket["target_weight"])})
         st.markdown("<div class='strategy-grid-divider'></div>", unsafe_allow_html=True)
+    return selected_rows
 
 
 def _coverage_metric(field: dict[str, object]) -> str:
@@ -701,17 +729,6 @@ else:
     )
 
 if active_view == "Explorer":
-    st.markdown(
-        """
-        <div class="section-box">
-            <div class="eyebrow">Fund shortlist</div>
-            <h3>Screen the universe and compare funds quickly.</h3>
-            <p class="section-copy">Use the filters on the left to narrow the list. Blank cells mean the value is not currently available. `N.A.` appears only when bond type or duration do not apply.</p>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
     sort_map = {"Fund name": "name", "Issuer": "issuer", "TER": "fee", "Asset type": "asset_class", "ISIN": "isin"}
     sort_col, direction_col = st.columns([1.25, 0.75], gap="large")
     with sort_col:
@@ -805,17 +822,6 @@ if active_view == "Explorer":
         _render_static_table(fund_table, table_class="browser-table", height=620)
 
 elif active_view == "Strategies":
-    st.markdown(
-        """
-        <div class="section-box">
-            <div class="eyebrow">Model portfolios</div>
-            <h3>Review one strategy at a time.</h3>
-            <p class="section-copy">Each sleeve is shown once. Pick a candidate ticker inside the row to inspect the matching UCITS implementation for that bucket.</p>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
     strategy_catalog = {str(strategy["name"]): strategy for strategy in STRATEGIES}
     selected_strategy_name = st.selectbox("Strategy", list(strategy_catalog.keys()), key="strategy_selector")
 
@@ -839,6 +845,7 @@ elif active_view == "Strategies":
         st.info("This strategy is not available under the current constraints.")
     else:
         selected_strategy = strategy_payload["strategies"][0]
+        st.caption("Each sleeve is shown once. Pick a candidate ticker inside the row to inspect the matching UCITS implementation for that bucket.")
         source_url = str(selected_strategy.get("source_url") or "")
         source_html = (
             f"<p class='section-copy' style='margin-top:0.7rem;'>Inspired by the allocation at "
@@ -861,7 +868,22 @@ elif active_view == "Strategies":
             unsafe_allow_html=True,
         )
         st.caption("Funds shown are unbounded in the UI: each sleeve includes every ranked candidate returned by the final bucket filter.")
-        _render_strategy_bucket_table(selected_strategy)
+        weighted_ter_slot = st.empty()
+        selected_rows = _render_strategy_bucket_table(selected_strategy)
+        weighted_ter, covered_weight, total_weight = _weighted_strategy_ter(selected_rows)
+        weighted_ter_label = _display_value(_format_percentage(weighted_ter))
+        weighted_ter_meta = (
+            f"Based on {covered_weight:.0f}% of target weight"
+            if total_weight > 0
+            else "No selected sleeves"
+        )
+        if total_weight > covered_weight and total_weight > 0:
+            weighted_ter_meta = f"{weighted_ter_meta} ({total_weight:.0f}% total target)"
+        with weighted_ter_slot.container():
+            st.markdown(
+                f"<div class='stat-card'><span>Weighted TER</span><strong>{_escape(weighted_ter_label)}</strong><em>{_escape(weighted_ter_meta)}</em></div>",
+                unsafe_allow_html=True,
+            )
 
 else:
     st.markdown(

@@ -20,6 +20,8 @@ def make_row(**overrides: object) -> dict[str, object]:
         "distribution_policy": "Accumulating",
         "ongoing_charges": 0.2,
         "ongoing_charges_asof": "2026-03-07",
+        "fund_size_value": 250000000.0,
+        "fund_size_currency": "USD",
         "asset_class": "equity",
         "geography_scope": "global",
         "geography_region": "global",
