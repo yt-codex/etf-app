@@ -19,7 +19,7 @@ from etf_app.api import (
 )
 
 
-UNKNOWN_DISPLAY = "Unknown"
+MISSING_DISPLAY = ""
 NOT_APPLICABLE_DISPLAY = "N.A."
 
 ASSET_TYPE_LABELS = {
@@ -349,18 +349,26 @@ def _format_distribution(value: object) -> Optional[str]:
     return text
 
 
-def _format_yes_no_unknown(value: object) -> str:
+def _format_yes_no_optional(value: object) -> str:
     if value in (1, True, "1", "true", "True"):
         return "Yes"
     if value in (0, False, "0", "false", "False"):
         return "No"
-    return UNKNOWN_DISPLAY
+    return MISSING_DISPLAY
 
 
-def _display_unknown_or_na(value: Optional[str], *, applicable: bool = True) -> str:
-    if not applicable:
+def _display_value(value: Optional[str]) -> str:
+    return value if value not in (None, "", "unknown", "Unknown") else MISSING_DISPLAY
+
+
+def _display_bond_value(value: Optional[str], *, is_bond: bool) -> str:
+    if not is_bond:
         return NOT_APPLICABLE_DISPLAY
-    return value if value not in (None, "", "unknown", "Unknown") else UNKNOWN_DISPLAY
+    return _display_value(value)
+
+
+def _compact_values(values: list[str]) -> list[str]:
+    return [value for value in values if value]
 
 
 def _asset_key(item: dict[str, object]) -> Optional[str]:
@@ -370,7 +378,7 @@ def _asset_key(item: dict[str, object]) -> Optional[str]:
 def _asset_label(item: dict[str, object]) -> str:
     asset_key = _asset_key(item)
     if asset_key is None:
-        return UNKNOWN_DISPLAY
+        return MISSING_DISPLAY
     return ASSET_TYPE_LABELS.get(asset_key, asset_key.replace("_", " ").title())
 
 
@@ -394,33 +402,37 @@ def _toggle_choice(label: str, options: list[str], *, default: str, key: str) ->
 
 
 def _region_label(item: dict[str, object]) -> str:
-    asset_key = _asset_key(item)
-    applicable = asset_key not in {"commodity", "cash"}
-    return _display_unknown_or_na(_pretty_label(item.get("geography_region"), REGION_LABELS), applicable=applicable)
+    return _display_value(_pretty_label(item.get("geography_region"), REGION_LABELS))
 
 
 def _equity_size_label(item: dict[str, object]) -> str:
-    return _display_unknown_or_na(_pretty_label(item.get("equity_size"), SIZE_LABELS), applicable=_asset_key(item) == "equity")
+    if _asset_key(item) != "equity":
+        return MISSING_DISPLAY
+    return _display_value(_pretty_label(item.get("equity_size"), SIZE_LABELS))
 
 
 def _equity_style_label(item: dict[str, object]) -> str:
-    return _display_unknown_or_na(_pretty_label(item.get("equity_style"), STYLE_LABELS), applicable=_asset_key(item) == "equity")
+    if _asset_key(item) != "equity":
+        return MISSING_DISPLAY
+    return _display_value(_pretty_label(item.get("equity_style"), STYLE_LABELS))
 
 
 def _sector_label(item: dict[str, object]) -> str:
-    return _display_unknown_or_na(_pretty_label(item.get("sector")), applicable=_asset_key(item) == "equity")
+    if _asset_key(item) != "equity":
+        return MISSING_DISPLAY
+    return _display_value(_pretty_label(item.get("sector")))
 
 
 def _replication_label(value: object) -> str:
-    return _display_unknown_or_na(_pretty_label(value, REPLICATION_LABELS))
+    return _display_value(_pretty_label(value, REPLICATION_LABELS))
 
 
 def _bond_type_label(item: dict[str, object]) -> str:
-    return _display_unknown_or_na(_pretty_label(item.get("bond_type"), BOND_TYPE_LABELS), applicable=_asset_key(item) == "bond")
+    return _display_bond_value(_pretty_label(item.get("bond_type"), BOND_TYPE_LABELS), is_bond=_asset_key(item) == "bond")
 
 
 def _duration_label(item: dict[str, object]) -> str:
-    return _display_unknown_or_na(_pretty_label(item.get("duration_bucket"), DURATION_LABELS), applicable=_asset_key(item) == "bond")
+    return _display_bond_value(_pretty_label(item.get("duration_bucket"), DURATION_LABELS), is_bond=_asset_key(item) == "bond")
 
 
 def _fund_table(items: list[dict[str, object]]) -> pd.DataFrame:
@@ -429,15 +441,15 @@ def _fund_table(items: list[dict[str, object]]) -> pd.DataFrame:
         rows.append(
             {
                 "Asset type": _asset_label(item),
-                "Issuer": _display_unknown_or_na(_normalized_known_text(item.get("issuer_name"))),
-                "ISIN": _display_unknown_or_na(_normalized_known_text(item.get("isin"))),
-                "Ticker": _display_unknown_or_na(_normalized_known_text(item.get("ticker"))),
-                "Fund name": _display_unknown_or_na(_normalized_known_text(item.get("instrument_name"))),
-                "Fund size": _display_unknown_or_na(_format_fund_size(item.get("fund_size_value"), item.get("fund_size_currency"))),
-                "Domicile": _display_unknown_or_na(_pretty_label(item.get("domicile_country"))),
-                "Distribution": _display_unknown_or_na(_format_distribution(item.get("distribution_policy"))),
-                "Currency": _display_unknown_or_na(_normalized_known_text(item.get("currency"))),
-                "TER": _display_unknown_or_na(_format_percentage(item.get("ongoing_charges"))),
+                "Issuer": _display_value(_normalized_known_text(item.get("issuer_name"))),
+                "ISIN": _display_value(_normalized_known_text(item.get("isin"))),
+                "Ticker": _display_value(_normalized_known_text(item.get("ticker"))),
+                "Fund name": _display_value(_normalized_known_text(item.get("instrument_name"))),
+                "Fund size": _display_value(_format_fund_size(item.get("fund_size_value"), item.get("fund_size_currency"))),
+                "Domicile": _display_value(_pretty_label(item.get("domicile_country"))),
+                "Distribution": _display_value(_format_distribution(item.get("distribution_policy"))),
+                "Currency": _display_value(_normalized_known_text(item.get("currency"))),
+                "TER": _display_value(_format_percentage(item.get("ongoing_charges"))),
                 "Region": _region_label(item),
                 "Size": _equity_size_label(item),
                 "Style": _equity_style_label(item),
@@ -464,15 +476,15 @@ def _strategy_table(rows: list[dict[str, object]]) -> pd.DataFrame:
         }
         formatted_rows.append(
             {
-                "Bucket": _display_unknown_or_na(_pretty_label(row.get("bucket_name"))),
+                "Bucket": _display_value(_pretty_label(row.get("bucket_name"))),
                 "Asset type": _asset_label(item),
-                "Issuer": _display_unknown_or_na(_normalized_known_text(row.get("issuer_normalized"))),
-                "ISIN": _display_unknown_or_na(_normalized_known_text(row.get("ISIN"))),
-                "Ticker": _display_unknown_or_na(_normalized_known_text(row.get("ticker"))),
-                "Fund name": _display_unknown_or_na(_normalized_known_text(row.get("instrument_name"))),
-                "Distribution": _display_unknown_or_na(_format_distribution(row.get("distribution_policy"))),
-                "Currency": _display_unknown_or_na(_normalized_known_text(row.get("currency"))),
-                "TER": _display_unknown_or_na(_format_percentage(row.get("ongoing_charges"))),
+                "Issuer": _display_value(_normalized_known_text(row.get("issuer_normalized"))),
+                "ISIN": _display_value(_normalized_known_text(row.get("ISIN"))),
+                "Ticker": _display_value(_normalized_known_text(row.get("ticker"))),
+                "Fund name": _display_value(_normalized_known_text(row.get("instrument_name"))),
+                "Distribution": _display_value(_format_distribution(row.get("distribution_policy"))),
+                "Currency": _display_value(_normalized_known_text(row.get("currency"))),
+                "TER": _display_value(_format_percentage(row.get("ongoing_charges"))),
                 "Region": _region_label(item),
                 "Size": _equity_size_label(item),
                 "Style": _equity_style_label(item),
@@ -518,45 +530,50 @@ def _render_static_table(df: pd.DataFrame, *, table_class: str, height: int) -> 
 
 def _render_fund_detail(detail: dict[str, object]) -> None:
     item = detail
-    title = _display_unknown_or_na(_normalized_known_text(detail.get("instrument_name")))
+    title = _display_value(_normalized_known_text(detail.get("instrument_name")))
     subtitle = " | ".join(
-        [
-            _display_unknown_or_na(_normalized_known_text(detail.get("issuer_name"))),
-            _display_unknown_or_na(_normalized_known_text(detail.get("isin"))),
-            _display_unknown_or_na(_normalized_known_text(detail.get("primary_venue"))),
-        ]
+        _compact_values(
+            [
+                _display_value(_normalized_known_text(detail.get("issuer_name"))),
+                _display_value(_normalized_known_text(detail.get("isin"))),
+                _display_value(_normalized_known_text(detail.get("primary_venue"))),
+            ]
+        )
     )
-    chips = [
+    chips = _compact_values(
+        [
         _asset_label(item),
         _region_label(item),
-        _display_unknown_or_na(_pretty_label(detail.get("domicile_country"))),
-        _display_unknown_or_na(_format_distribution(detail.get("distribution_policy"))),
-    ]
+        _display_value(_pretty_label(detail.get("domicile_country"))),
+        _display_value(_format_distribution(detail.get("distribution_policy"))),
+        ]
+    )
     tiles = [
-        ("Ticker", _display_unknown_or_na(_normalized_known_text(detail.get("ticker")))),
-        ("Fund size", _display_unknown_or_na(_format_fund_size(detail.get("fund_size_value"), detail.get("fund_size_currency")))),
-        ("Fund size as of", _display_unknown_or_na(_normalized_known_text(detail.get("fund_size_asof")))),
-        ("Trading currency", _display_unknown_or_na(_normalized_known_text(detail.get("currency")))),
-        ("TER", _display_unknown_or_na(_format_percentage(detail.get("ongoing_charges")))),
-        ("Benchmark", _display_unknown_or_na(_normalized_known_text(detail.get("benchmark_name")))),
+        ("Ticker", _display_value(_normalized_known_text(detail.get("ticker")))),
+        ("Fund size", _display_value(_format_fund_size(detail.get("fund_size_value"), detail.get("fund_size_currency")))),
+        ("Fund size as of", _display_value(_normalized_known_text(detail.get("fund_size_asof")))),
+        ("Trading currency", _display_value(_normalized_known_text(detail.get("currency")))),
+        ("TER", _display_value(_format_percentage(detail.get("ongoing_charges")))),
+        ("Benchmark", _display_value(_normalized_known_text(detail.get("benchmark_name")))),
         ("Size", _equity_size_label(item)),
         ("Style", _equity_style_label(item)),
         ("Sector", _sector_label(item)),
         ("Replication", _replication_label(detail.get("replication_method"))),
         ("Bond type", _bond_type_label(item)),
         ("Duration", _duration_label(item)),
-        ("Hedged", _format_yes_no_unknown(detail.get("hedged_flag"))),
-        ("Hedge target", _display_unknown_or_na(_pretty_label(detail.get("hedged_target")))),
+        ("Hedged", _format_yes_no_optional(detail.get("hedged_flag"))),
+        ("Hedge target", _display_value(_pretty_label(detail.get("hedged_target")))),
     ]
+    visible_tiles = [(label, value) for label, value in tiles if value]
     chip_html = "".join(f"<span class='chip'>{_escape(value)}</span>" for value in chips)
     tile_html = "".join(
         f"<div class='detail-tile'><span>{_escape(label)}</span><strong>{_escape(value)}</strong></div>"
-        for label, value in tiles
+        for label, value in visible_tiles
     )
     st.markdown(
         f"""
         <div class="detail-box">
-            <div class="eyebrow">Selected fund</div>
+            <div class="eyebrow">Fund details</div>
             <h3>{_escape(title)}</h3>
             <p class="detail-meta">{_escape(subtitle)}</p>
             <div class="chip-row">{chip_html}</div>
@@ -565,9 +582,6 @@ def _render_fund_detail(detail: dict[str, object]) -> None:
         """,
         unsafe_allow_html=True,
     )
-    if detail.get("taxonomy_evidence"):
-        with st.expander("Taxonomy evidence", expanded=False):
-            st.json(detail["taxonomy_evidence"], expanded=False)
 
 
 db_path = _db_path()
@@ -584,72 +598,78 @@ taxonomy = completeness["taxonomy"]
 strict_filters = completeness["strategy_readiness"]["strict_hard_filters"]
 fee_gaps = completeness["fee_gaps"]["missing_fees_top_issuers"]
 
-hero_left, hero_right = st.columns([1.55, 1.0], gap="large")
-with hero_left:
-    st.markdown(
-        """
-        <div class="hero-box">
-            <div class="eyebrow">Singapore UCITS ETF Explorer</div>
-            <h1>Browse funds like a client would, not like a data engineer.</h1>
-            <p>Filter the UCITS universe, compare core fund characteristics side by side, and review predefined portfolio strategies without exposing the raw mechanics of the backend pipeline.</p>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-with hero_right:
-    st.markdown(
-        """
-        <div class="summary-box">
-            <div class="eyebrow">What changed</div>
-            <h3>Cleaner table, clearer labels</h3>
-            <p class="section-copy">The main explorer now uses a fixed client-facing schema, explicit missing-value rules, and one strategy selector at a time. The coverage view stays available, but it no longer dominates the browsing experience.</p>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-_render_metric_grid(
-    [
-        {"label": "Universe", "value": f"{overview['total_instruments']}", "meta": "UCITS ETFs currently in scope"},
-        {"label": "Domicile", "value": _coverage_metric(profile_fields["domicile_country"]), "meta": f"{profile_fields['domicile_country']['pct']:.2f}% available"},
-        {"label": "Fund size", "value": _coverage_metric(profile_fields["fund_size_value"]), "meta": f"{profile_fields['fund_size_value']['pct']:.2f}% available"},
-        {"label": "Strict-ready", "value": f"{strict_filters['kept']}", "meta": "Funds surviving the hard filters"},
-    ]
-)
-
-st.sidebar.markdown("## Explore funds")
-st.sidebar.markdown(
+st.markdown(
     """
-    <div class="summary-box" style="padding:0.9rem 1rem;">
-        <p class="section-copy">`N.A.` means the field does not apply to that fund type. `Unknown` means it should exist but has not been populated yet.</p>
+    <div class="hero-box">
+        <div class="eyebrow">Singapore UCITS ETF Explorer</div>
+        <h1>Find UCITS ETFs that fit your portfolio.</h1>
+        <p>Screen the UCITS fund universe by exchange, region, income policy, fund size, structure and cost, then review model portfolio ideas built from the same shortlist.</p>
     </div>
     """,
     unsafe_allow_html=True,
 )
 
-search = st.sidebar.text_input("Search", placeholder="ISIN, fund name, ticker, issuer, benchmark")
-venue = st.sidebar.selectbox("Venue", ["Any venue"] + [str(row["value"]) for row in filters_payload["venue"]])
-asset_class = st.sidebar.selectbox("Asset type", _selectbox_options(filters_payload["asset_class"], "asset type"))
-geography_region = st.sidebar.selectbox("Region", _selectbox_options(filters_payload["geography_region"], "region"))
-equity_size = st.sidebar.selectbox("Size", _selectbox_options(filters_payload["equity_size"], "size"))
-equity_style = st.sidebar.selectbox("Style", _selectbox_options(filters_payload["equity_style"], "style"))
-sector = st.sidebar.selectbox("Sector", _selectbox_options(filters_payload["sector"], "sector"))
-bond_type = st.sidebar.selectbox("Bond type", _selectbox_options(filters_payload["bond_type"], "bond type"))
-currency = st.sidebar.selectbox("Currency", _selectbox_options(filters_payload["currency"], "currency"))
-distribution = st.sidebar.selectbox("Distribution", _selectbox_options(filters_payload["distribution_policy"], "distribution"))
-issuer = st.sidebar.selectbox("Issuer", _selectbox_options(filters_payload["issuer_top"], "issuer"))
-hedged = st.sidebar.selectbox("Hedged", ["Any hedge state", "Yes", "No"])
-page_size = st.sidebar.selectbox("Rows per page", [25, 50, 100], index=1)
+_render_metric_grid(
+    [
+        {"label": "Universe", "value": f"{overview['total_instruments']}", "meta": "UCITS ETFs currently in scope"},
+        {"label": "TER shown", "value": _coverage_metric(profile_fields["ongoing_charges"]), "meta": f"{profile_fields['ongoing_charges']['pct']:.2f}% available"},
+        {"label": "Domicile", "value": _coverage_metric(profile_fields["domicile_country"]), "meta": f"{profile_fields['domicile_country']['pct']:.2f}% available"},
+        {"label": "Fund size", "value": _coverage_metric(profile_fields["fund_size_value"]), "meta": f"{profile_fields['fund_size_value']['pct']:.2f}% available"},
+    ]
+)
 
-browse_tab, strategies_tab, coverage_tab = st.tabs(["Explorer", "Strategies", "Coverage"])
+active_view = _toggle_choice("View", ["Explorer", "Strategies", "Coverage"], default="Explorer", key="active_view")
+if active_view == "Explorer":
+    st.markdown(
+        """
+        <style>
+        [data-testid="stSidebar"] { display: block; }
+        [data-testid="collapsedControl"] { display: flex; }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+    st.sidebar.markdown("## Explorer filters")
+    st.sidebar.markdown(
+        """
+        <div class="summary-box" style="padding:0.9rem 1rem;">
+            <p class="section-copy">Blank cells mean the value is not currently available. `N.A.` is used only when bond type or duration do not apply.</p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
-with browse_tab:
+    search = st.sidebar.text_input("Search", placeholder="ISIN, fund name, ticker, issuer, benchmark")
+    exchange = st.sidebar.selectbox("Exchange", ["Any exchange"] + [str(row["value"]) for row in filters_payload["venue"]])
+    asset_class = st.sidebar.selectbox("Asset type", _selectbox_options(filters_payload["asset_class"], "asset type"))
+    geography_region = st.sidebar.selectbox("Region", _selectbox_options(filters_payload["geography_region"], "region"))
+    equity_size = st.sidebar.selectbox("Size", _selectbox_options(filters_payload["equity_size"], "size"))
+    equity_style = st.sidebar.selectbox("Style", _selectbox_options(filters_payload["equity_style"], "style"))
+    sector = st.sidebar.selectbox("Sector", _selectbox_options(filters_payload["sector"], "sector"))
+    bond_type = st.sidebar.selectbox("Bond type", _selectbox_options(filters_payload["bond_type"], "bond type"))
+    currency = st.sidebar.selectbox("Currency", _selectbox_options(filters_payload["currency"], "currency"))
+    distribution = st.sidebar.selectbox("Distribution", _selectbox_options(filters_payload["distribution_policy"], "distribution"))
+    issuer = st.sidebar.selectbox("Issuer", _selectbox_options(filters_payload["issuer_top"], "issuer"))
+    hedged = st.sidebar.selectbox("Hedged", ["Any hedge state", "Yes", "No"])
+    page_size = st.sidebar.selectbox("Rows per page", [25, 50, 100], index=1)
+else:
+    st.markdown(
+        """
+        <style>
+        [data-testid="stSidebar"] { display: none; }
+        [data-testid="collapsedControl"] { display: none; }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+if active_view == "Explorer":
     st.markdown(
         """
         <div class="section-box">
-            <div class="eyebrow">Fund explorer</div>
-            <h3>Core fund facts in one clean table.</h3>
-            <p class="section-copy">The main view keeps only client-facing ETF attributes. Static rendering removes the built-in grid menus, so sorting stays explicit and the table reads like a comparison sheet rather than an admin console.</p>
+            <div class="eyebrow">Fund shortlist</div>
+            <h3>Screen the universe and compare funds quickly.</h3>
+            <p class="section-copy">Use the filters on the left to narrow the list. Blank cells mean the value is not currently available. `N.A.` appears only when bond type or duration do not apply.</p>
         </div>
         """,
         unsafe_allow_html=True,
@@ -684,16 +704,16 @@ with browse_tab:
         fund_params["distribution_policy"] = selected
     if selected := _selected_filter(issuer, "Any issuer"):
         fund_params["issuer"] = selected
-    if venue != "Any venue":
-        fund_params["venue"] = venue
+    if exchange != "Any exchange":
+        fund_params["venue"] = exchange
     if hedged == "Yes":
         fund_params["hedged"] = "true"
     elif hedged == "No":
         fund_params["hedged"] = "false"
 
     active_filters: list[str] = []
-    if venue != "Any venue":
-        active_filters.append(f"Venue: {venue}")
+    if exchange != "Any exchange":
+        active_filters.append(f"Exchange: {exchange}")
     for key, label in (
         ("asset_class", "Asset type"),
         ("geography_region", "Region"),
@@ -712,7 +732,7 @@ with browse_tab:
     if search:
         active_filters.append(f"Search: {search}")
     _render_chip_row(active_filters or ["All active UCITS ETFs"], accent_first=True)
-    st.caption("The table uses `N.A.` for fields that do not apply to a fund type and `Unknown` for values that are still missing.")
+    st.caption("Blank cells indicate data that is not currently available. `N.A.` is used only for bond type and duration on non-bond funds.")
 
     filter_signature = tuple(sorted(fund_params.items()))
     if st.session_state.get("browse_filter_signature") != filter_signature:
@@ -754,32 +774,33 @@ with browse_tab:
         options = funds_payload["items"]
         if options:
             option_labels = [f"{item['instrument_name']} | {item['isin']}" for item in options]
-            selected_label = st.selectbox("Selected fund", option_labels, key="fund_detail_picker")
+            selected_label = st.selectbox("Inspect fund", option_labels, key="fund_detail_picker")
             detail = load_fund_detail(db_path, options[option_labels.index(selected_label)]["isin"])
             if detail:
                 _render_fund_detail(detail)
         else:
             st.info("No fund details available for the current slice.")
 
-with strategies_tab:
+elif active_view == "Strategies":
     st.markdown(
         """
         <div class="section-box">
-            <div class="eyebrow">Predefined strategies</div>
-            <h3>Choose one strategy at a time.</h3>
-            <p class="section-copy">Instead of dumping every template at once, the strategy view now lets you focus on one portfolio design and inspect the sleeves it pulls from the database.</p>
+            <div class="eyebrow">Model portfolios</div>
+            <h3>Review one strategy at a time.</h3>
+            <p class="section-copy">Choose a portfolio template to see the ETFs currently filling each sleeve of the strategy.</p>
         </div>
         """,
         unsafe_allow_html=True,
     )
 
-    ctrl_one, ctrl_two, ctrl_three, ctrl_four = st.columns([0.9, 0.85, 1.3, 1.0], gap="medium")
-    strategy_venue = ctrl_one.selectbox("Venue scope", ["ALL", "XLON", "XETR"], key="strategy_venue")
+    ctrl_one, ctrl_two, ctrl_three = st.columns([0.95, 0.85, 1.3], gap="medium")
+    strategy_exchange_options = {"All exchanges": "ALL", "London": "XLON", "Xetra": "XETR"}
+    strategy_exchange_label = ctrl_one.selectbox("Exchange scope", list(strategy_exchange_options.keys()), key="strategy_venue")
+    strategy_venue = strategy_exchange_options[strategy_exchange_label]
     top_n = ctrl_two.selectbox("Funds per sleeve", [1, 2, 3, 4, 5], index=2, key="strategy_top_n")
-    preferred_currency_order = ctrl_three.text_input("Preferred currencies", value="USD,EUR,GBP", key="strategy_currency_order")
-    with ctrl_four:
-        allow_missing_fees = st.checkbox("Allow missing TER", value=False, key="strategy_allow_missing_fees")
-        allow_missing_currency = st.checkbox("Allow missing currency", value=False, key="strategy_allow_missing_currency")
+    preferred_currency_order = ctrl_three.text_input("Preferred trading currencies", value="USD,EUR,GBP", key="strategy_currency_order")
+    allow_missing_fees = False
+    allow_missing_currency = False
 
     strategy_payload = load_strategy_payload(db_path, strategy_venue, preferred_currency_order, int(top_n), allow_missing_fees, allow_missing_currency)
     strategy_names = [str(strategy["name"]) for strategy in strategy_payload["strategies"]]
@@ -798,13 +819,12 @@ with strategies_tab:
         )
     min_bucket = min(selected_strategy["emitted"].values()) if selected_strategy["emitted"] else 0
 
-    _render_chip_row([strategy_payload["gold_policy"]["note"]], accent_first=True)
     _render_metric_grid(
         [
             {"label": "Strategy", "value": selected_strategy["name"], "meta": selected_strategy["description"]},
             {"label": "Rows shown", "value": str(len(selected_strategy["rows"])), "meta": "Selected funds across all sleeves"},
             {"label": "Smallest sleeve", "value": str(min_bucket), "meta": "Lowest sleeve count in this run"},
-            {"label": "Venue scope", "value": strategy_venue, "meta": f"Top {top_n} fund(s) per sleeve"},
+            {"label": "Exchange scope", "value": strategy_exchange_label, "meta": f"Top {top_n} fund(s) per sleeve"},
         ]
     )
 
@@ -819,13 +839,7 @@ with strategies_tab:
         else:
             st.info("This strategy did not emit any rows under the current constraints.")
 
-    with st.expander(f"{selected_strategy['name']} diagnostics", expanded=False):
-        st.json(selected_strategy["diagnostics"], expanded=False)
-        if selected_strategy["rows"]:
-            st.markdown("Selection reason sample")
-            st.json(selected_strategy["rows"][0]["selection_reason"], expanded=False)
-
-with coverage_tab:
+else:
     st.markdown(
         """
         <div class="section-box">
@@ -875,5 +889,3 @@ with coverage_tab:
 
         st.markdown("#### Hard-filter exclusions")
         st.json(strict_filters["excluded"], expanded=False)
-
-st.caption(f"Database: {db_path}")
