@@ -21,7 +21,9 @@ class IssuerFeeSource:
     source_url: Optional[str]
     source_name: str
     source_url_template: Optional[str] = None
+    source_urls: tuple[str, ...] = ()
     request_headers: Optional[dict[str, str]] = None
+    match_window: int = 220
 
 
 SUPPORTED_SOURCES: tuple[IssuerFeeSource, ...] = (
@@ -63,16 +65,31 @@ SUPPORTED_SOURCES: tuple[IssuerFeeSource, ...] = (
         ),
         source_name="vaneck_product_list_pdf",
     ),
+    IssuerFeeSource(
+        key="bnpparibas",
+        issuer_names=("BNP Paribas",),
+        source_url=None,
+        source_name="bnpp_docfinder_etf_range_pdf",
+        source_urls=(
+            "https://docfinder.bnpparibas-am.com/api/files/2e52fd81-49f2-4479-a6c2-3f2b36521aea",
+            "https://docfinder.bnpparibas-am.com/api/files/488fd84c-3455-47a8-b2a4-55ffebdebcd8",
+        ),
+        match_window=600,
+    ),
 )
 
 
 def normalize_source_keys(values: list[str]) -> list[str]:
     if not values:
         return [source.key for source in SUPPORTED_SOURCES]
+    aliases = {
+        "bnp": "bnpparibas",
+        "bnp-paribas": "bnpparibas",
+    }
     out: list[str] = []
     seen: set[str] = set()
     for value in values:
-        token = normalize_space(value).lower()
+        token = aliases.get(normalize_space(value).lower(), normalize_space(value).lower())
         if not token or token in seen:
             continue
         out.append(token)
@@ -198,7 +215,7 @@ def apply_fee_map(
     for row in rows:
         instrument_id = int(row["instrument_id"])
         isin = str(row["isin"] or "")
-        ongoing_charges, snippet = find_fee_after_isin(pdf_text, isin)
+        ongoing_charges, snippet = find_fee_after_isin(pdf_text, isin, window=source.match_window)
         if ongoing_charges is None:
             continue
         stats["matched"] += 1
@@ -210,6 +227,56 @@ def apply_fee_map(
             "instrument_name": row["instrument_name"],
             "ongoing_charges": ongoing_charges,
             "match_window": snippet,
+        }
+        insert_cost_snapshot(
+            conn,
+            instrument_id=instrument_id,
+            asof_date=asof_date,
+            ongoing_charges=ongoing_charges,
+            entry_costs=None,
+            exit_costs=None,
+            transaction_costs=None,
+            doc_id=None,
+            quality_flag="ok",
+            raw_json=raw_json,
+        )
+        stats["inserted"] += 1
+    return stats
+
+
+def apply_multi_pdf_fee_map(
+    conn: sqlite3.Connection,
+    *,
+    rows: list[sqlite3.Row],
+    source: IssuerFeeSource,
+    pdf_texts: list[tuple[str, str]],
+    asof_date: str,
+) -> dict[str, int]:
+    stats = {"attempted": len(rows), "matched": 0, "inserted": 0}
+    for row in rows:
+        instrument_id = int(row["instrument_id"])
+        isin = str(row["isin"] or "")
+        matched_url: Optional[str] = None
+        matched_snippet: Optional[str] = None
+        ongoing_charges: Optional[float] = None
+        for source_url, pdf_text in pdf_texts:
+            ongoing_charges, snippet = find_fee_after_isin(pdf_text, isin, window=source.match_window)
+            if ongoing_charges is None:
+                continue
+            matched_url = source_url
+            matched_snippet = snippet
+            break
+        if ongoing_charges is None:
+            continue
+        stats["matched"] += 1
+        raw_json = {
+            "source": "issuer_fee_enrich",
+            "issuer_source": source.source_name,
+            "source_url": matched_url,
+            "matched_isin": isin,
+            "instrument_name": row["instrument_name"],
+            "ongoing_charges": ongoing_charges,
+            "match_window": matched_snippet,
         }
         insert_cost_snapshot(
             conn,
@@ -315,11 +382,31 @@ def run_issuer_fee_backfill(db_path: str, source_keys: list[str] | None = None) 
                     asof_date=asof_date,
                 )
                 continue
-            pdf_bytes = download_pdf(source.source_url, headers=source.request_headers)
-            pdf_text = extract_pdf_text(pdf_bytes)
+            pdf_texts: list[tuple[str, str]] = []
+            source_urls = list(source.source_urls)
+            if source.source_url:
+                source_urls.insert(0, source.source_url)
+            for source_url in source_urls:
+                pdf_bytes = download_pdf(source_url, headers=source.request_headers)
+                pdf_texts.append((source_url, extract_pdf_text(pdf_bytes)))
             conn.execute("BEGIN")
             try:
-                stats = apply_fee_map(conn, rows=rows, source=source, pdf_text=pdf_text, asof_date=asof_date)
+                if len(pdf_texts) == 1:
+                    stats = apply_fee_map(
+                        conn,
+                        rows=rows,
+                        source=source,
+                        pdf_text=pdf_texts[0][1],
+                        asof_date=asof_date,
+                    )
+                else:
+                    stats = apply_multi_pdf_fee_map(
+                        conn,
+                        rows=rows,
+                        source=source,
+                        pdf_texts=pdf_texts,
+                        asof_date=asof_date,
+                    )
                 conn.commit()
             except Exception:
                 conn.rollback()
@@ -339,7 +426,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         "--source",
         action="append",
         default=[],
-        help="Optional source key filter; repeatable. Supported: spdr, jpmorgan, invesco, vaneck",
+        help="Optional source key filter; repeatable. Supported: spdr, jpmorgan, invesco, vaneck, bnpparibas",
     )
     args = parser.parse_args(argv)
     results = run_issuer_fee_backfill(args.db_path, args.source)

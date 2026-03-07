@@ -282,6 +282,52 @@ def test_load_targets_includes_fee_complete_rows_with_missing_profile_metadata()
     assert [int(row["instrument_id"]) for row in rows] == [1]
 
 
+def test_load_targets_prioritizes_missing_fee_rows_before_metadata_only_rows() -> None:
+    conn = make_conn()
+    conn.execute("INSERT INTO issuer(issuer_id, issuer_name, normalized_name) VALUES (1, 'Amundi', 'Amundi')")
+    conn.execute(
+        """
+        INSERT INTO instrument(instrument_id, isin, instrument_name, issuer_id, universe_mvp_flag, ucits_flag)
+        VALUES
+            (1, 'LU0000000001', 'Amundi Missing Fee UCITS ETF', 1, 1, 1),
+            (2, 'LU0000000002', 'Amundi Metadata Gap UCITS ETF', 1, 1, 1)
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO listing(listing_id, instrument_id, ticker, venue_mic, primary_flag, status, trading_currency)
+        VALUES
+            (1, 1, 'AAA', 'XETR', 1, 'active', 'EUR'),
+            (2, 2, 'BBB', 'XETR', 1, 'active', 'EUR')
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO cost_snapshot(instrument_id, asof_date, ongoing_charges, quality_flag, raw_json)
+        VALUES (2, '2026-03-07', 0.12, 'amundi_factsheet_ok', '{}')
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO product_profile(
+            instrument_id,
+            ongoing_charges,
+            ongoing_charges_asof,
+            benchmark_name,
+            asset_class_hint,
+            domicile_country,
+            replication_method,
+            hedged_flag,
+            updated_at
+        ) VALUES (2, 0.12, '2026-03-07', NULL, NULL, NULL, NULL, NULL, '2026-03-07T00:00:00Z')
+        """
+    )
+
+    rows = load_targets(conn, limit=2, venue="ALL")
+
+    assert [int(row["instrument_id"]) for row in rows] == [1, 2]
+
+
 def test_main_commits_successful_rows_before_later_failure(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,

@@ -44,6 +44,24 @@ def test_find_fee_after_isin_handles_vaneck_product_list_text() -> None:
     assert fee == 0.59
 
 
+def test_find_fee_after_isin_handles_bnp_docfinder_table_window() -> None:
+    text = (
+        "BNP PARIBAS EASY ETF & INDEX FUNDS RANGE "
+        "LU2194447293 BLHYE FP, H2GB LN AT, CH, DE, ES, FR, GB, IT2, LU, NL "
+        "Euronext Paris, Xetra, SIX Swiss Exchange, LSE USD / GBP 4 "
+        "ECPI Global ESG Blue Economy UCITS ETF Accumulating "
+        "LU2533813296 BLUSD FP, ASR1 GY, BLUSD SE, BLUS LN, H2GB LN "
+        "AT, CH, DE, ES, FR, GB, IT2, LU, NL Euronext Paris, Xetra, SIX Swiss Exchange, LSE "
+        "USD / GBP Physical 4 0.31% 116 4 "
+    )
+
+    fee, snippet = find_fee_after_isin(text, "LU2533813296", window=600)
+
+    assert fee == 0.31
+    assert snippet is not None
+    assert "LU2533813296" in snippet
+
+
 def test_extract_invesco_factsheet_payload_extracts_fee_and_metadata() -> None:
     text = (
         "As of 31 January 2026 Invesco FTSE All-World UCITS ETF Dist "
@@ -79,6 +97,10 @@ def test_normalize_source_keys_accepts_new_vaneck_source() -> None:
 
 def test_normalize_source_keys_accepts_invesco_source() -> None:
     assert normalize_source_keys(["invesco", "spdr"]) == ["invesco", "spdr"]
+
+
+def test_normalize_source_keys_accepts_bnpparibas_aliases() -> None:
+    assert normalize_source_keys(["bnp", "bnpparibas", "spdr"]) == ["bnpparibas", "spdr"]
 
 
 def test_apply_fee_map_inserts_latest_fee_snapshot() -> None:

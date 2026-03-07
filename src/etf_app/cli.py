@@ -105,7 +105,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--source",
         action="append",
         default=[],
-        help="Optional source key filter; repeatable. Supported: spdr, jpmorgan, invesco, vaneck",
+        help="Optional source key filter; repeatable. Supported: spdr, jpmorgan, invesco, vaneck, bnpparibas",
     )
 
     recommend = subparsers.add_parser(

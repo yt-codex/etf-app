@@ -1045,7 +1045,9 @@ def load_targets(conn: sqlite3.Connection, limit: int, venue: str) -> list[sqlit
               OR UPPER(COALESCE(iss.normalized_name, '')) LIKE '%MULTI UNITS%'
               OR UPPER(i.instrument_name) LIKE '%LYXOR%'
           )
-        ORDER BY i.isin
+        ORDER BY
+            CASE WHEN icc.ongoing_charges IS NULL THEN 0 ELSE 1 END,
+            i.isin
         LIMIT ?
     """
     params: list[object] = [*venues, limit]
