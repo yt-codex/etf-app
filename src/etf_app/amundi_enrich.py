@@ -122,6 +122,12 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--cache-dir", default="kid_cache", help="Local PDF cache directory")
     parser.add_argument("--limit", type=int, default=2000, help="Maximum instruments to attempt")
     parser.add_argument(
+        "--max-existing-fee",
+        type=float,
+        default=None,
+        help="Also reprocess rows whose latest TER is less than or equal to this threshold.",
+    )
+    parser.add_argument(
         "--venue",
         choices=["XLON", "XETR", "ALL"],
         default="ALL",
@@ -1096,12 +1102,28 @@ def ensure_tables_and_view(conn: sqlite3.Connection) -> None:
     )
 
 
-def load_targets(conn: sqlite3.Connection, limit: int, venue: str) -> list[sqlite3.Row]:
+def load_targets(
+    conn: sqlite3.Connection,
+    limit: int,
+    venue: str,
+    max_existing_fee: Optional[float] = None,
+) -> list[sqlite3.Row]:
     venues = venue_scope(venue)
     placeholders = ",".join("?" for _ in venues)
     profile_join = ""
     profile_filter = "AND icc.ongoing_charges IS NULL"
     profile_order = "i.isin"
+    suspicious_fee_sql = ""
+    fee_priority_sql = "CASE WHEN icc.ongoing_charges IS NULL THEN 0 ELSE 1 END,"
+    if max_existing_fee is not None:
+        threshold_sql = f"{float(max_existing_fee):.6f}"
+        suspicious_fee_sql = f" OR (icc.ongoing_charges IS NOT NULL AND icc.ongoing_charges <= {threshold_sql})"
+        fee_priority_sql = (
+            "CASE "
+            "WHEN icc.ongoing_charges IS NULL THEN 0 "
+            f"WHEN icc.ongoing_charges <= {threshold_sql} THEN 1 "
+            "ELSE 2 END,"
+        )
     url_map_row = conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table' AND name='instrument_url_map'"
     ).fetchone()
@@ -1125,6 +1147,7 @@ def load_targets(conn: sqlite3.Connection, limit: int, venue: str) -> list[sqlit
         profile_filter = """
           AND (
               icc.ongoing_charges IS NULL
+              {suspicious_fee_sql}
               OR p.instrument_id IS NULL
               OR p.benchmark_name IS NULL OR TRIM(p.benchmark_name) = ''
               OR p.asset_class_hint IS NULL OR TRIM(p.asset_class_hint) = ''
@@ -1133,10 +1156,10 @@ def load_targets(conn: sqlite3.Connection, limit: int, venue: str) -> list[sqlit
               OR p.replication_method IS NULL OR TRIM(p.replication_method) = ''
               OR p.hedged_flag IS NULL
           )
-        """
+        """.format(suspicious_fee_sql=suspicious_fee_sql)
         profile_order = f"""
             {url_priority}
-            CASE WHEN icc.ongoing_charges IS NULL THEN 0 ELSE 1 END,
+            {fee_priority_sql}
             CASE WHEN p.fund_size_value IS NULL THEN 0 ELSE 1 END,
             CASE WHEN p.domicile_country IS NULL OR TRIM(p.domicile_country) = '' THEN 0 ELSE 1 END,
             CASE WHEN p.benchmark_name IS NULL OR TRIM(p.benchmark_name) = '' THEN 0 ELSE 1 END,
@@ -1148,7 +1171,7 @@ def load_targets(conn: sqlite3.Connection, limit: int, venue: str) -> list[sqlit
     elif url_priority:
         profile_order = f"""
             {url_priority}
-            CASE WHEN icc.ongoing_charges IS NULL THEN 0 ELSE 1 END,
+            {fee_priority_sql}
             i.isin
         """
     sql = f"""
@@ -1430,7 +1453,7 @@ def main(argv: list[str]) -> int:
     try:
         ensure_tables_and_view(conn)
         conn.commit()
-        targets = load_targets(conn, args.limit, args.venue)
+        targets = load_targets(conn, args.limit, args.venue, max_existing_fee=args.max_existing_fee)
         attempted = len(targets)
         existing_urls = load_existing_factsheet_urls(
             conn,

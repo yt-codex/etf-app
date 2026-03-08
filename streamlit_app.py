@@ -782,7 +782,7 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-active_view = _toggle_choice("View", ["Explorer", "Strategies", "Coverage", "Custom"], default="Explorer", key="active_view")
+active_view = _toggle_choice("View", ["Explorer", "Strategies", "Custom", "Coverage"], default="Explorer", key="active_view")
 if active_view == "Explorer":
     st.markdown(
         """

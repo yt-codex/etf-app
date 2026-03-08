@@ -97,8 +97,15 @@ def normalize_source_keys(values: list[str]) -> list[str]:
     return out
 
 
-def select_missing_fee_targets(conn: sqlite3.Connection, issuer_names: tuple[str, ...]) -> list[sqlite3.Row]:
+def select_missing_fee_targets(
+    conn: sqlite3.Connection,
+    issuer_names: tuple[str, ...],
+    max_existing_fee: Optional[float] = None,
+) -> list[sqlite3.Row]:
     placeholders = ",".join("?" for _ in issuer_names)
+    fee_filter = "icc.ongoing_charges IS NULL"
+    if max_existing_fee is not None:
+        fee_filter = f"(icc.ongoing_charges IS NULL OR icc.ongoing_charges <= {float(max_existing_fee):.6f})"
     sql = f"""
         SELECT DISTINCT
             CAST(u.instrument_id AS INTEGER) AS instrument_id,
@@ -110,7 +117,7 @@ def select_missing_fee_targets(conn: sqlite3.Connection, issuer_names: tuple[str
         LEFT JOIN issuer iss ON iss.issuer_id = i.issuer_id
         LEFT JOIN instrument_cost_current icc ON icc.instrument_id = i.instrument_id
         WHERE UPPER(COALESCE(u.instrument_type, '')) = 'ETF'
-          AND icc.ongoing_charges IS NULL
+          AND {fee_filter}
           AND UPPER(COALESCE(iss.normalized_name, u.issuer_normalized, '')) IN ({placeholders})
         ORDER BY u.isin
     """
@@ -354,7 +361,11 @@ def apply_template_fee_source(
     return stats
 
 
-def run_issuer_fee_backfill(db_path: str, source_keys: list[str] | None = None) -> dict[str, dict[str, int]]:
+def run_issuer_fee_backfill(
+    db_path: str,
+    source_keys: list[str] | None = None,
+    max_existing_fee: Optional[float] = None,
+) -> dict[str, dict[str, int]]:
     selected_keys = normalize_source_keys(source_keys or [])
     selected_sources = [source for source in SUPPORTED_SOURCES if source.key in selected_keys]
     unknown = sorted(set(selected_keys) - {source.key for source in SUPPORTED_SOURCES})
@@ -370,7 +381,7 @@ def run_issuer_fee_backfill(db_path: str, source_keys: list[str] | None = None) 
         apply_migrations(conn)
         conn.commit()
         for source in selected_sources:
-            rows = select_missing_fee_targets(conn, source.issuer_names)
+            rows = select_missing_fee_targets(conn, source.issuer_names, max_existing_fee=max_existing_fee)
             if not rows:
                 results[source.key] = {"attempted": 0, "matched": 0, "inserted": 0}
                 continue
@@ -428,8 +439,14 @@ def main(argv: Optional[list[str]] = None) -> int:
         default=[],
         help="Optional source key filter; repeatable. Supported: spdr, jpmorgan, invesco, vaneck, bnpparibas",
     )
+    parser.add_argument(
+        "--max-existing-fee",
+        type=float,
+        default=None,
+        help="Also reprocess rows whose latest TER is less than or equal to this threshold.",
+    )
     args = parser.parse_args(argv)
-    results = run_issuer_fee_backfill(args.db_path, args.source)
+    results = run_issuer_fee_backfill(args.db_path, args.source, max_existing_fee=args.max_existing_fee)
     for key, stats in results.items():
         print(
             f"{key}: attempted={stats['attempted']} matched={stats['matched']} inserted={stats['inserted']}"

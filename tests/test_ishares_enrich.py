@@ -244,6 +244,63 @@ def test_load_targets_prioritizes_missing_fee_rows_before_metadata_only_rows() -
     assert [int(row["instrument_id"]) for row in rows] == [1, 2]
 
 
+def test_load_targets_can_reprocess_existing_low_fee_rows() -> None:
+    conn = make_conn()
+    conn.execute(
+        "INSERT INTO issuer(issuer_id, issuer_name, normalized_name) VALUES (1, 'BlackRock iShares', 'BlackRock / iShares')"
+    )
+    conn.execute(
+        """
+        INSERT INTO instrument(instrument_id, isin, instrument_name, issuer_id, universe_mvp_flag, ucits_flag)
+        VALUES
+            (1, 'IE0000001001', 'iShares Suspicious Low Fee UCITS ETF', 1, 1, 1),
+            (2, 'IE0000001002', 'iShares Normal Fee UCITS ETF', 1, 1, 1)
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO listing(listing_id, instrument_id, ticker, venue_mic, primary_flag, status, trading_currency)
+        VALUES
+            (1, 1, 'LOW', 'XETR', 1, 'active', 'EUR'),
+            (2, 2, 'HI', 'XETR', 1, 'active', 'EUR')
+        """
+    )
+    conn.executemany(
+        """
+        INSERT INTO cost_snapshot(instrument_id, asof_date, ongoing_charges, quality_flag, raw_json)
+        VALUES (?, '2026-03-07', ?, 'issuer_page_ok', '{}')
+        """,
+        [
+            (1, 0.03),
+            (2, 0.12),
+        ],
+    )
+    conn.executemany(
+        """
+        INSERT INTO product_profile(
+            instrument_id,
+            ongoing_charges,
+            ongoing_charges_asof,
+            benchmark_name,
+            asset_class_hint,
+            domicile_country,
+            fund_size_value,
+            replication_method,
+            hedged_flag,
+            updated_at
+        ) VALUES (?, ?, '2026-03-07', 'MSCI World', 'Equity', 'Ireland', 100000000.0, 'physical', 0, '2026-03-07T00:00:00Z')
+        """,
+        [
+            (1, 0.03),
+            (2, 0.12),
+        ],
+    )
+
+    rows = load_targets(conn, limit=10, venue="ALL", max_existing_fee=0.05)
+
+    assert [int(row["instrument_id"]) for row in rows] == [1]
+
+
 def test_load_targets_prioritizes_reusable_urls_then_fund_size_gaps() -> None:
     conn = make_conn()
     conn.execute(
@@ -408,7 +465,7 @@ def test_main_commits_successful_rows_before_later_failure(
         }
 
     monkeypatch.setattr(ishares_enrich, "HttpClient", FakeClient)
-    monkeypatch.setattr(ishares_enrich, "load_targets", lambda conn, limit, venue: rows)
+    monkeypatch.setattr(ishares_enrich, "load_targets", lambda conn, limit, venue, max_existing_fee=None: rows)
     monkeypatch.setattr(
         ishares_enrich,
         "find_existing_ishares_product_url",
