@@ -18,6 +18,7 @@ from etf_app.api import (
     list_funds,
     open_read_conn,
 )
+from etf_app.db_bootstrap import resolve_db_path
 from etf_app.recommend import BUCKET_OPTIONS, STRATEGIES
 
 
@@ -296,12 +297,11 @@ st.markdown(
 
 
 def _db_path() -> str:
-    secret_path: Optional[str] = None
     try:
-        secret_path = st.secrets.get("db_path")
-    except Exception:
-        secret_path = None
-    return str(Path(secret_path or os.getenv("ETF_APP_DB_PATH", "stage1_etf.db")))
+        resolved = resolve_db_path(default_path="stage1_etf.db", secrets=st.secrets, env=os.environ)
+    except Exception as exc:
+        raise RuntimeError(str(exc)) from exc
+    return str(resolved)
 
 
 def _with_conn(sqlite_path: str, fn, *args, **kwargs):
@@ -1052,9 +1052,10 @@ def _render_explorer_table(df: pd.DataFrame, *, height: int, ter_sort_direction:
     )
 
 
-db_path = _db_path()
-if not Path(db_path).exists():
-    st.error(f"Database not found at `{db_path}`. Set `ETF_APP_DB_PATH` or add `db_path` to Streamlit secrets.")
+try:
+    db_path = _db_path()
+except RuntimeError as exc:
+    st.error(str(exc))
     st.stop()
 
 filters_payload = load_filters(db_path)

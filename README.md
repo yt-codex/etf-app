@@ -68,6 +68,20 @@ $env:ETF_APP_DB_PATH='stage1_etf.db'
 streamlit run streamlit_app.py
 ```
 
+For Streamlit Cloud or any environment where the SQLite file is not checked into the repo, host the database file externally and provide a download URL instead:
+
+```toml
+db_url = "https://your-storage.example.com/stage1_etf.db"
+db_version = "2026-03-08"
+db_sha256 = "replace-with-the-file-sha256"
+```
+
+Optional deployment settings:
+
+- `db_cache_name`: override the cached filename on the server
+- `db_cache_dir`: override the local cache directory on the server
+- `db_path`: keep using an already-mounted local file if your host provides one
+
 Legacy command names (`patch-data`, `stage1-refresh`, `classify-taxonomy`, `recommend-strategies`) still work.
 
 ## API
