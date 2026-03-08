@@ -115,7 +115,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Backfill fund size, style, and sector hints from FT ETF tearsheets",
     )
     ft_metadata.add_argument("--db-path", default="stage1_etf.db", help="Path to SQLite DB")
-    ft_metadata.add_argument("--limit", type=int, default=100, help="Maximum instruments to attempt")
+    ft_metadata.add_argument("--limit", type=int, default=100, help="Maximum instruments to attempt (0 means all matching targets)")
     ft_metadata.add_argument(
         "--venue",
         choices=["XLON", "XETR", "ALL"],
@@ -302,6 +302,7 @@ def run_ft_enrichment(
     )
     print(
         f"ft metadata backfill: attempted={stats.attempted} resolved={stats.resolved} "
+        f"failures_recorded={stats.failures_recorded} "
         f"summary_parsed={stats.summary_parsed} holdings_parsed={stats.holdings_parsed} "
         f"snapshots_inserted={stats.snapshots_inserted} "
         f"profile_rows_upserted={stats.profile_rows_upserted} "

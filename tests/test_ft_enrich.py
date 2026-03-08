@@ -67,6 +67,16 @@ SEARCH_HTML = """
 """
 
 
+NO_RESULTS_HTML = """
+<html>
+  <head><title>Equities, ETF and Funds prices, indices and stock quotes - FT.com</title></head>
+  <body>
+    <p>There were no results found for LCWD:LSE:USD among etfs.</p>
+  </body>
+</html>
+"""
+
+
 NASDAQ_OBJECTIVE_HTML = """
 <div class="mod-tearsheet-overview__header__name">Amundi Core Nasdaq-100 Swap UCITS ETF Acc</div>
 <div class="mod-aside__module">
@@ -191,6 +201,11 @@ def test_extract_ft_search_symbols_keeps_unique_etf_summary_symbols() -> None:
     ]
 
 
+def test_is_missing_ft_page_detects_ft_no_results_template() -> None:
+    assert ft_enrich.is_missing_ft_page(NO_RESULTS_HTML) is True
+    assert ft_enrich.is_missing_ft_page(SUMMARY_HTML) is False
+
+
 def test_load_targets_can_filter_by_ticker_or_isin(tmp_path) -> None:
     db_path = make_db(tmp_path)
     conn = sqlite3.connect(db_path)
@@ -218,6 +233,81 @@ def test_load_targets_can_filter_by_ticker_or_isin(tmp_path) -> None:
 
     assert [int(row["instrument_id"]) for row in ticker_rows] == [2]
     assert [int(row["instrument_id"]) for row in isin_rows] == [1]
+
+
+def test_load_targets_with_zero_limit_returns_all_matching_rows(tmp_path) -> None:
+    db_path = make_db(tmp_path)
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    conn.execute(
+        """
+        INSERT INTO instrument(
+            instrument_id, isin, instrument_name, instrument_type, status, universe_mvp_flag, ucits_flag, ucits_source
+        ) VALUES (2, 'LU1829221024', 'Amundi Core Nasdaq-100 Swap UCITS ETF Acc', 'ETF', 'active', 1, 1, 'legacy_seed')
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO listing(
+            listing_id, instrument_id, venue_mic, ticker, trading_currency, primary_flag, status
+        ) VALUES (2, 2, 'XLON', 'NASD', 'USD', 1, 'active')
+        """
+    )
+    conn.commit()
+
+    rows = ft_enrich.load_targets(conn, limit=0, venue="ALL")
+
+    conn.close()
+
+    assert [int(row["instrument_id"]) for row in rows] == [1, 2]
+
+
+def test_load_targets_skips_current_parser_ft_rows_unless_explicitly_requested(tmp_path) -> None:
+    db_path = make_db(tmp_path)
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    ft_enrich.ensure_tables(conn)
+    conn.execute(
+        """
+        INSERT INTO instrument(
+            instrument_id, isin, instrument_name, instrument_type, status, universe_mvp_flag, ucits_flag, ucits_source
+        ) VALUES (2, 'LU1829221024', 'Amundi Core Nasdaq-100 Swap UCITS ETF Acc', 'ETF', 'active', 1, 1, 'legacy_seed')
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO listing(
+            listing_id, instrument_id, venue_mic, ticker, trading_currency, primary_flag, status
+        ) VALUES (2, 2, 'XLON', 'NASD', 'USD', 1, 'active')
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO issuer_metadata_snapshot(
+            instrument_id, asof_date, source, source_url, ter, use_of_income, ucits_compliant, quality_flag, raw_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            1,
+            "2026-03-08",
+            ft_enrich.FT_SOURCE,
+            ft_enrich.summary_url("CSPX:LSE:USD"),
+            0.07,
+            "Accumulating",
+            1,
+            "ft_tearsheet_ok",
+            '{"parser_version": "ft_tearsheet_v2"}',
+        ),
+    )
+    conn.commit()
+
+    default_rows = ft_enrich.load_targets(conn, limit=0, venue="ALL")
+    explicit_rows = ft_enrich.load_targets(conn, limit=10, venue="ALL", tickers=["CSPX"])
+
+    conn.close()
+
+    assert [int(row["instrument_id"]) for row in default_rows] == [2]
+    assert [int(row["instrument_id"]) for row in explicit_rows] == [1]
 
 
 def test_resolve_symbol_uses_search_fallback_when_direct_symbols_fail(tmp_path, monkeypatch) -> None:
@@ -315,3 +405,39 @@ def test_run_ft_metadata_backfill_updates_profile_and_taxonomy(tmp_path, monkeyp
         "equity_style": "blend",
         "sector": "technology",
     }
+
+
+def test_run_ft_metadata_backfill_records_unresolved_attempts(tmp_path, monkeypatch) -> None:
+    db_path = make_db(tmp_path)
+
+    monkeypatch.setattr(ft_enrich, "build_session", lambda: object())
+    monkeypatch.setattr(ft_enrich, "fetch_html", lambda _session, _url: None)
+
+    stats = ft_enrich.run_ft_metadata_backfill(
+        db_path=db_path,
+        limit=10,
+        venue="ALL",
+        sleep_seconds=0.0,
+    )
+
+    assert stats.attempted == 1
+    assert stats.resolved == 0
+    assert stats.failures_recorded == 1
+    assert stats.summary_parsed == 0
+    assert stats.holdings_parsed == 0
+    assert stats.snapshots_inserted == 0
+
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    row = conn.execute(
+        """
+        SELECT quality_flag, source_url, raw_json
+        FROM issuer_metadata_snapshot
+        WHERE instrument_id = 1
+        """
+    ).fetchone()
+    conn.close()
+
+    assert row["quality_flag"] == "ft_tearsheet_unresolved"
+    assert row["source_url"] == "https://markets.ft.com/data/search?query=IE00B5BMR087"
+    assert '"resolution_failed": true' in row["raw_json"]

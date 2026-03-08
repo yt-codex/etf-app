@@ -33,6 +33,7 @@ SUPPORTED_VENUES = tuple(FT_EXCHANGE_BY_VENUE)
 class FtBackfillStats:
     attempted: int = 0
     resolved: int = 0
+    failures_recorded: int = 0
     summary_parsed: int = 0
     holdings_parsed: int = 0
     snapshots_inserted: int = 0
@@ -127,6 +128,9 @@ def load_targets(
     taxonomy_join = ""
     taxonomy_filter = ""
     taxonomy_order = ""
+    ft_snapshot_join = ""
+    ft_snapshot_filter = ""
+    ft_snapshot_order = ""
     identifier_filter = ""
     identifier_params: list[object] = []
     identifier_clauses: list[str] = []
@@ -150,6 +154,7 @@ def load_targets(
         identifier_params.extend(normalized_tickers)
     if identifier_clauses:
         identifier_filter = f"\n          AND ({' OR '.join(identifier_clauses)})"
+    explicit_identifier_match = bool(identifier_clauses)
     if table_exists(conn, "instrument_taxonomy"):
         taxonomy_join = "LEFT JOIN instrument_taxonomy t ON t.instrument_id = i.instrument_id"
         taxonomy_filter = """
@@ -166,6 +171,34 @@ def load_targets(
             CASE WHEN t.equity_style IS NULL THEN 0 ELSE 1 END,
             CASE WHEN t.sector IS NULL THEN 0 ELSE 1 END,
         """
+    if table_exists(conn, "issuer_metadata_snapshot") and not explicit_identifier_match:
+        ft_snapshot_join = f"""
+        LEFT JOIN (
+            SELECT ims.instrument_id, ims.raw_json
+            FROM issuer_metadata_snapshot ims
+            JOIN (
+                SELECT instrument_id, MAX(id) AS latest_id
+                FROM issuer_metadata_snapshot
+                WHERE source = '{FT_SOURCE}'
+                GROUP BY instrument_id
+            ) latest
+              ON latest.latest_id = ims.id
+        ) fts
+          ON fts.instrument_id = i.instrument_id
+        """
+        ft_snapshot_filter = """
+          AND (
+              fts.instrument_id IS NULL
+              OR COALESCE(fts.raw_json, '') NOT LIKE ?
+          )
+        """
+        ft_snapshot_order = """
+            CASE WHEN fts.instrument_id IS NULL THEN 0 ELSE 1 END,
+        """
+    limit_clause = ""
+    if limit > 0:
+        limit_clause = "\n        LIMIT ?"
+
     sql = f"""
         WITH ranked_listings AS (
             SELECT
@@ -207,6 +240,7 @@ def load_targets(
         LEFT JOIN product_profile p
           ON p.instrument_id = i.instrument_id
         {taxonomy_join}
+        {ft_snapshot_join}
         WHERE COALESCE(i.universe_mvp_flag, 0) = 1
           AND COALESCE(i.status, 'active') = 'active'
           AND UPPER(COALESCE(i.instrument_type, '')) = 'ETF'
@@ -222,7 +256,9 @@ def load_targets(
               OR p.sector_hint IS NULL
               {taxonomy_filter}
           )
+          {ft_snapshot_filter}
         ORDER BY
+            {ft_snapshot_order}
             CASE WHEN p.instrument_id IS NULL THEN 0 ELSE 1 END,
             CASE WHEN p.benchmark_name IS NULL OR TRIM(p.benchmark_name) = '' THEN 0 ELSE 1 END,
             CASE WHEN p.distribution_policy IS NULL THEN 0 ELSE 1 END,
@@ -232,9 +268,13 @@ def load_targets(
             CASE WHEN p.sector_hint IS NULL THEN 0 ELSE 1 END,
             {taxonomy_order}
             i.isin
-        LIMIT ?
+        {limit_clause}
     """
-    params: list[object] = [*venues, *identifier_params, limit]
+    params: list[object] = [*venues, *identifier_params]
+    if ft_snapshot_join:
+        params.append(f'%\"parser_version\": \"{PARSER_VERSION}\"%')
+    if limit > 0:
+        params.append(limit)
     return conn.execute(sql, params).fetchall()
 
 
@@ -334,6 +374,17 @@ def build_session() -> requests.Session:
     return session
 
 
+def is_missing_ft_page(html: str) -> bool:
+    text = normalize_space(html).lower()
+    if not text:
+        return True
+    if "sorry, no data" in text:
+        return True
+    if "there were no results found for" in text and "among etfs." in text:
+        return True
+    return False
+
+
 def fetch_html(session: requests.Session, url: str) -> Optional[str]:
     try:
         response = session.get(url, timeout=REQUEST_TIMEOUT_SECONDS)
@@ -341,7 +392,7 @@ def fetch_html(session: requests.Session, url: str) -> Optional[str]:
     except requests.RequestException:
         return None
     text = response.text or ""
-    if not text or "Sorry, no data" in text:
+    if is_missing_ft_page(text):
         return None
     return text
 
@@ -830,6 +881,27 @@ def run_ft_metadata_backfill(
                 venue=venue,
             )
             if not symbol or summary_html is None:
+                insert_issuer_metadata_snapshot(
+                    conn,
+                    instrument_id=instrument_id,
+                    asof_date=today_iso(),
+                    source_url=search_url(isin),
+                    ter=None,
+                    use_of_income=None,
+                    ucits_compliant=None,
+                    quality_flag="ft_tearsheet_unresolved",
+                    raw_json={
+                        "source": FT_SOURCE,
+                        "parser_version": PARSER_VERSION,
+                        "resolution_failed": True,
+                        "isin": isin,
+                    },
+                )
+                stats.failures_recorded += 1
+                pending_flush += 1
+                if commit_every > 0 and pending_flush >= commit_every:
+                    flush_derived_tables(conn, stats)
+                    pending_flush = 0
                 continue
             stats.resolved += 1
             stats.summary_parsed += 1
@@ -904,7 +976,7 @@ def run_ft_metadata_backfill(
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Backfill ETF metadata from FT ETF tearsheets")
     parser.add_argument("--db-path", default="stage1_etf.db", help="Path to SQLite DB")
-    parser.add_argument("--limit", type=int, default=100, help="Maximum instruments to attempt")
+    parser.add_argument("--limit", type=int, default=100, help="Maximum instruments to attempt (0 means all matching targets)")
     parser.add_argument(
         "--venue",
         choices=["XLON", "XETR", "ALL"],
@@ -951,6 +1023,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     print(
         f"ft metadata backfill: attempted={stats.attempted} resolved={stats.resolved} "
+        f"failures_recorded={stats.failures_recorded} "
         f"summary_parsed={stats.summary_parsed} holdings_parsed={stats.holdings_parsed} "
         f"snapshots_inserted={stats.snapshots_inserted} "
         f"profile_rows_upserted={stats.profile_rows_upserted} "
