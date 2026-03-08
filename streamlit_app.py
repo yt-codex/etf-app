@@ -91,7 +91,7 @@ EXPLORER_COLUMNS = [
     "Duration",
 ]
 
-st.set_page_config(page_title="ETF Atlas", layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(page_title="UCITS ETF Atlas", layout="wide", initial_sidebar_state="expanded")
 
 st.markdown(
     """
@@ -774,7 +774,7 @@ fee_gaps = completeness["fee_gaps"]["missing_fees_top_issuers"]
 st.markdown(
     """
     <div class="hero-box">
-        <div class="eyebrow">Singapore UCITS ETF Explorer</div>
+        <div class="eyebrow">UCITS ETF Explorer</div>
         <h1>Find UCITS ETFs that fit your portfolio.</h1>
         <p>Screen the UCITS fund universe by exchange, region, income policy, fund size, structure and cost, then review model portfolio ideas built from the same shortlist.</p>
     </div>
