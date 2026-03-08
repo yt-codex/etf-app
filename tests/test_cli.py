@@ -77,6 +77,11 @@ from etf_app import cli
             ("db.sqlite", 25, "XETR", 0.5, ["NASD", "ANXU"], ["LU1829221024"], 20),
         ),
         (
+            ["build-deploy-db", "--db-path", "db.sqlite", "--output-path", "deploy.sqlite"],
+            "run_build_deploy_db",
+            ("db.sqlite", "deploy.sqlite"),
+        ),
+        (
             ["serve-api", "--db-path", "db.sqlite", "--host", "0.0.0.0", "--port", "9000", "--refresh-derived-on-start"],
             "run_api",
             ("db.sqlite", "0.0.0.0", 9000, True),

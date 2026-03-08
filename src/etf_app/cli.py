@@ -5,6 +5,7 @@ import sqlite3
 from pathlib import Path
 
 from etf_app.api import run_api_server
+from etf_app.deploy_db import build_deploy_db
 from etf_app.ft_enrich import run_ft_metadata_backfill
 from etf_app import listing_hygiene, listing_ingest, universe_refine
 from etf_app.completeness import generate_completeness_report
@@ -145,6 +146,17 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=0,
         help="Flush product_profile/taxonomy and commit every N resolved FT snapshots",
+    )
+
+    deploy_db = subparsers.add_parser(
+        "build-deploy-db",
+        help="Export a slim SQLite database containing only the Streamlit runtime tables",
+    )
+    deploy_db.add_argument("--db-path", default="stage1_etf.db", help="Path to source SQLite DB")
+    deploy_db.add_argument(
+        "--output-path",
+        default="deploy_stage1_etf.db",
+        help="Path to output deploy SQLite DB",
     )
 
     serve_api = subparsers.add_parser(
@@ -311,6 +323,22 @@ def run_ft_enrichment(
     return 0
 
 
+def run_build_deploy_db(db_path: str, output_path: str) -> int:
+    stats = build_deploy_db(source_db_path=db_path, output_db_path=output_path)
+    print(
+        "deploy db built: "
+        f"instruments={stats.instrument_rows} "
+        f"issuers={stats.issuer_rows} "
+        f"listings={stats.listing_rows} "
+        f"profiles={stats.product_profile_rows} "
+        f"taxonomy={stats.instrument_taxonomy_rows} "
+        f"current_cost_rows={stats.cost_snapshot_rows} "
+        f"source_bytes={stats.source_size_bytes} "
+        f"output_bytes={stats.output_size_bytes}"
+    )
+    return 0
+
+
 def run_issuer_normalization(db_path: str, only_missing_fees: bool) -> int:
     conn = sqlite3.connect(str(Path(db_path)))
     conn.row_factory = sqlite3.Row
@@ -396,6 +424,8 @@ def main(argv: list[str] | None = None) -> int:
             args.isin,
             args.commit_every,
         )
+    if args.command == "build-deploy-db":
+        return run_build_deploy_db(args.db_path, args.output_path)
     if args.command == "serve-api":
         return run_api(
             args.db_path,
