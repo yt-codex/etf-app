@@ -70,6 +70,9 @@ BUCKET_LABELS = {str(item["bucket_name"]): str(item["label"]) for item in BUCKET
 BUCKET_PICKER_LABELS = {str(item["bucket_name"]): str(item["picker_label"]) for item in BUCKET_OPTIONS}
 CUSTOM_BUCKET_PLACEHOLDER = "__choose_bucket__"
 STRATEGY_UI_TOP_N = 5000
+VIEW_OPTIONS = ["Explorer", "Strategies", "Custom", "Coverage"]
+CUSTOM_BUCKET_IDS_KEY = "custom_bucket_ids"
+CUSTOM_BUCKET_NEXT_ID_KEY = "custom_bucket_next_id"
 
 EXPLORER_COLUMNS = [
     "Asset type",
@@ -179,13 +182,18 @@ st.markdown(
         margin: 0.15rem 0 0.45rem 0;
     }
     .table-note { display: flex; justify-content: space-between; align-items: center; gap: 1rem; margin: 0.2rem 0 0.9rem 0; color: var(--muted); font-size: 0.92rem; }
+    .view-toggle-spacer { height: 1.05rem; }
+    .view-toggle-label { font-size: 1rem; font-weight: 600; color: var(--ink); margin: 0 0 0.55rem 0; }
     .stTabs [data-baseweb="tab-list"] { gap: 0.45rem; background: rgba(255,252,248,0.72); border: 1px solid var(--line); border-radius: 999px; padding: 0.32rem; width: fit-content; }
     .stTabs [data-baseweb="tab"] { border-radius: 999px; padding: 0.58rem 1rem; color: var(--muted); font-weight: 600; height: auto; }
     .stTabs [aria-selected="true"] { background: var(--moss); color: #f8f4ed !important; }
     div[data-baseweb="select"] > div, div[data-baseweb="base-input"] > div, [data-testid="stNumberInput"] div[data-baseweb="input"] > div {
         background: rgba(255,255,255,0.88) !important; border: 1px solid var(--line) !important; border-radius: 15px !important; box-shadow: none !important;
     }
-    [data-testid="stButton"] button { border-radius: 14px; border: 1px solid var(--line); background: rgba(255,255,255,0.9); color: var(--ink); box-shadow: none; }
+    [data-testid="stButton"] button {
+        border-radius: 14px; border: 1px solid var(--line); background: rgba(255,255,255,0.9);
+        color: var(--ink); box-shadow: none; min-height: 2.8rem; padding: 0.58rem 0.9rem; font-size: 0.98rem; font-weight: 600;
+    }
     @media (max-width: 1280px) {
         .metric-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
         .detail-grid { grid-template-columns: 1fr; }
@@ -411,14 +419,39 @@ def _selectbox_options(rows: list[dict[str, object]], label: str) -> list[str]:
     return [f"Any {label}"] + values
 
 
-def _toggle_choice(label: str, options: list[str], *, default: str, key: str) -> str:
-    if default not in options:
-        default = options[0]
-    segmented = getattr(st, "segmented_control", None)
-    if callable(segmented):
-        selected = segmented(label, options=options, default=default, selection_mode="single", key=key)
-        return str(selected or default)
-    return str(st.radio(label, options, index=options.index(default), horizontal=True, key=key))
+def _set_session_value(key: str, value: object) -> None:
+    st.session_state[key] = value
+
+
+def _ensure_state_value(key: str, default: object, options: Optional[list[object]] = None) -> None:
+    current = st.session_state.get(key, default)
+    if options is not None and current not in options:
+        st.session_state[key] = default
+        return
+    if key not in st.session_state:
+        st.session_state[key] = default
+
+
+def _chunked(items: list[object], size: int) -> list[list[object]]:
+    return [items[idx : idx + size] for idx in range(0, len(items), size)]
+
+
+def _render_view_selector(options: list[str], *, default: str, key: str) -> str:
+    _ensure_state_value(key, default, options)
+    current = str(st.session_state.get(key, default))
+    st.markdown("<div class='view-toggle-spacer'></div><div class='view-toggle-label'>View</div>", unsafe_allow_html=True)
+    cols = st.columns(len(options), gap="small")
+    for col, option in zip(cols, options):
+        with col:
+            st.button(
+                option,
+                key=f"{key}_{option.lower()}",
+                type="primary" if current == option else "secondary",
+                use_container_width=True,
+                on_click=_set_session_value,
+                args=(key, option),
+            )
+    return str(st.session_state.get(key, default))
 
 
 def _region_label(item: dict[str, object]) -> str:
@@ -455,7 +488,12 @@ def _duration_label(item: dict[str, object]) -> str:
     return _display_bond_value(_pretty_label(item.get("duration_bucket"), DURATION_LABELS), is_bond=_asset_key(item) == "bond")
 
 
-def _fund_table(items: list[dict[str, object]]) -> pd.DataFrame:
+def _fund_table(items: list[dict[str, object]], *, ter_sort_direction: Optional[str] = None) -> pd.DataFrame:
+    ter_header = "TER"
+    if ter_sort_direction == "asc":
+        ter_header = "TER ↑"
+    elif ter_sort_direction == "desc":
+        ter_header = "TER ↓"
     rows: list[dict[str, str]] = []
     for item in items:
         rows.append(
@@ -469,7 +507,7 @@ def _fund_table(items: list[dict[str, object]]) -> pd.DataFrame:
                 "Domicile": _display_value(_pretty_label(item.get("domicile_country"))),
                 "Distribution": _display_value(_format_distribution(item.get("distribution_policy"))),
                 "Currency": _display_value(_normalized_known_text(item.get("currency"))),
-                "TER": _display_value(_format_percentage(item.get("ongoing_charges"))),
+                ter_header: _display_value(_format_percentage(item.get("ongoing_charges"))),
                 "Region": _region_label(item),
                 "Size": _equity_size_label(item),
                 "Style": _equity_style_label(item),
@@ -479,7 +517,8 @@ def _fund_table(items: list[dict[str, object]]) -> pd.DataFrame:
                 "Duration": _duration_label(item),
             }
         )
-    return pd.DataFrame(rows, columns=EXPLORER_COLUMNS)
+    columns = [column if column != "TER" else ter_header for column in EXPLORER_COLUMNS]
+    return pd.DataFrame(rows, columns=columns)
 
 
 def _bucket_label(value: object) -> str:
@@ -598,23 +637,61 @@ def _custom_bucket_picker_label(bucket_name: str) -> str:
     return BUCKET_PICKER_LABELS.get(bucket_name, bucket_name)
 
 
-def _collect_custom_bucket_inputs(bucket_count: int) -> tuple[list[dict[str, object]], float, list[str], bool]:
+def _ensure_custom_bucket_rows() -> list[int]:
+    row_ids = st.session_state.get(CUSTOM_BUCKET_IDS_KEY)
+    if isinstance(row_ids, list) and row_ids:
+        if CUSTOM_BUCKET_NEXT_ID_KEY not in st.session_state:
+            st.session_state[CUSTOM_BUCKET_NEXT_ID_KEY] = max(int(row_id) for row_id in row_ids) + 1
+        return [int(row_id) for row_id in row_ids]
+
+    initial_ids = [0, 1, 2]
+    st.session_state[CUSTOM_BUCKET_IDS_KEY] = initial_ids
+    st.session_state[CUSTOM_BUCKET_NEXT_ID_KEY] = len(initial_ids)
+    for idx, row_id in enumerate(initial_ids):
+        default_bucket, default_weight = _custom_bucket_default(idx)
+        st.session_state[f"custom_bucket_name_{row_id}"] = default_bucket
+        st.session_state[f"custom_bucket_weight_{row_id}"] = default_weight
+    return initial_ids
+
+
+def _add_custom_bucket_row() -> None:
+    row_ids = _ensure_custom_bucket_rows()
+    if len(row_ids) >= MAX_CUSTOM_BUCKETS:
+        return
+    row_id = int(st.session_state.get(CUSTOM_BUCKET_NEXT_ID_KEY, len(row_ids)))
+    st.session_state[CUSTOM_BUCKET_NEXT_ID_KEY] = row_id + 1
+    updated_ids = [*row_ids, row_id]
+    st.session_state[CUSTOM_BUCKET_IDS_KEY] = updated_ids
+    default_bucket, default_weight = _custom_bucket_default(len(updated_ids) - 1)
+    st.session_state[f"custom_bucket_name_{row_id}"] = default_bucket
+    st.session_state[f"custom_bucket_weight_{row_id}"] = default_weight
+
+
+def _remove_custom_bucket_row(row_id: int) -> None:
+    row_ids = [int(item) for item in st.session_state.get(CUSTOM_BUCKET_IDS_KEY, [])]
+    if row_id not in row_ids or len(row_ids) <= 1:
+        return
+    st.session_state[CUSTOM_BUCKET_IDS_KEY] = [item for item in row_ids if item != row_id]
+    st.session_state.pop(f"custom_bucket_name_{row_id}", None)
+    st.session_state.pop(f"custom_bucket_weight_{row_id}", None)
+
+
+def _collect_custom_bucket_inputs() -> tuple[list[dict[str, object]], float, list[str], bool]:
     rows: list[dict[str, object]] = []
     total_weight = 0.0
     selected_names: list[str] = []
     has_missing_bucket = False
     bucket_options = [CUSTOM_BUCKET_PLACEHOLDER] + list(BUCKET_PICKER_LABELS.keys())
 
-    for idx in range(bucket_count):
+    row_ids = _ensure_custom_bucket_rows()
+    for idx, row_id in enumerate(row_ids):
         default_bucket, default_weight = _custom_bucket_default(idx)
-        bucket_key = f"custom_bucket_name_{idx}"
-        weight_key = f"custom_bucket_weight_{idx}"
-        if bucket_key not in st.session_state:
-            st.session_state[bucket_key] = default_bucket
-        if weight_key not in st.session_state:
-            st.session_state[weight_key] = default_weight
+        bucket_key = f"custom_bucket_name_{row_id}"
+        weight_key = f"custom_bucket_weight_{row_id}"
+        _ensure_state_value(bucket_key, default_bucket, bucket_options)
+        _ensure_state_value(weight_key, default_weight)
 
-        row_cols = st.columns([1.65, 0.75], gap="medium")
+        row_cols = st.columns([1.6, 0.72, 0.28], gap="small")
         with row_cols[0]:
             bucket_name = st.selectbox(
                 f"Bucket {idx + 1}",
@@ -631,6 +708,17 @@ def _collect_custom_bucket_inputs(bucket_count: int) -> tuple[list[dict[str, obj
                 format="%.1f",
                 key=weight_key,
             )
+        with row_cols[2]:
+            st.markdown("<div style='height:1.95rem'></div>", unsafe_allow_html=True)
+            st.button(
+                "x",
+                key=f"custom_bucket_remove_{row_id}",
+                help="Remove bucket",
+                use_container_width=True,
+                disabled=len(row_ids) <= 1,
+                on_click=_remove_custom_bucket_row,
+                args=(row_id,),
+            )
         total_weight += float(target_weight)
         if bucket_name == CUSTOM_BUCKET_PLACEHOLDER:
             has_missing_bucket = True
@@ -639,6 +727,34 @@ def _collect_custom_bucket_inputs(bucket_count: int) -> tuple[list[dict[str, obj
         rows.append({"bucket_name": bucket_name, "target_weight": float(target_weight)})
 
     return rows, total_weight, selected_names, has_missing_bucket
+
+
+def _reset_explorer_filter(key: str, default: object) -> None:
+    st.session_state[key] = default
+    st.session_state["browse_page"] = 1
+
+
+def _toggle_ter_sort(direction: str) -> None:
+    current = st.session_state.get("browse_ter_sort_direction")
+    st.session_state["browse_ter_sort_direction"] = None if current == direction else direction
+    st.session_state["browse_page"] = 1
+
+
+def _render_filter_tag_buttons(tags: list[dict[str, object]]) -> None:
+    if not tags:
+        _render_chip_row(["All active UCITS ETFs"], accent_first=True)
+        return
+    for row_index, chunk in enumerate(_chunked(tags, 3)):
+        cols = st.columns(len(chunk), gap="small")
+        for col, tag in zip(cols, chunk):
+            with col:
+                st.button(
+                    f"{tag['label']} x",
+                    key=f"explorer_filter_tag_{row_index}_{tag['state_key']}",
+                    use_container_width=True,
+                    on_click=_reset_explorer_filter,
+                    args=(str(tag["state_key"]), tag["default"]),
+                )
 
 
 def _render_strategy_bucket_table(strategy: dict[str, object]) -> list[dict[str, object]]:
@@ -782,7 +898,7 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-active_view = _toggle_choice("View", ["Explorer", "Strategies", "Custom", "Coverage"], default="Explorer", key="active_view")
+active_view = _render_view_selector(VIEW_OPTIONS, default="Explorer", key="active_view")
 if active_view == "Explorer":
     st.markdown(
         """
@@ -794,28 +910,46 @@ if active_view == "Explorer":
         unsafe_allow_html=True,
     )
     st.sidebar.markdown("## Explorer filters")
-    st.sidebar.markdown(
-        """
-        <div class="summary-box" style="padding:0.9rem 1rem;">
-            <p class="section-copy">Blank cells mean the value is not currently available. `N.A.` is used only when bond type or duration do not apply.</p>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+    exchange_options = ["Any exchange"] + [str(row["value"]) for row in filters_payload["venue"]]
+    asset_type_options = _selectbox_options(filters_payload["asset_class"], "asset type")
+    region_options = _selectbox_options(filters_payload["geography_region"], "region")
+    size_options = _selectbox_options(filters_payload["equity_size"], "size")
+    style_options = _selectbox_options(filters_payload["equity_style"], "style")
+    sector_options = _selectbox_options(filters_payload["sector"], "sector")
+    bond_type_options = _selectbox_options(filters_payload["bond_type"], "bond type")
+    currency_options = _selectbox_options(filters_payload["currency"], "currency")
+    distribution_options = _selectbox_options(filters_payload["distribution_policy"], "distribution")
+    issuer_options = _selectbox_options(filters_payload["issuer_top"], "issuer")
+    hedged_options = ["Any hedge state", "Yes", "No"]
+    page_size_options = [25, 50, 100]
 
-    search = st.sidebar.text_input("Search", placeholder="ISIN, fund name, ticker, issuer, benchmark")
-    exchange = st.sidebar.selectbox("Exchange", ["Any exchange"] + [str(row["value"]) for row in filters_payload["venue"]])
-    asset_class = st.sidebar.selectbox("Asset type", _selectbox_options(filters_payload["asset_class"], "asset type"))
-    geography_region = st.sidebar.selectbox("Region", _selectbox_options(filters_payload["geography_region"], "region"))
-    equity_size = st.sidebar.selectbox("Size", _selectbox_options(filters_payload["equity_size"], "size"))
-    equity_style = st.sidebar.selectbox("Style", _selectbox_options(filters_payload["equity_style"], "style"))
-    sector = st.sidebar.selectbox("Sector", _selectbox_options(filters_payload["sector"], "sector"))
-    bond_type = st.sidebar.selectbox("Bond type", _selectbox_options(filters_payload["bond_type"], "bond type"))
-    currency = st.sidebar.selectbox("Currency", _selectbox_options(filters_payload["currency"], "currency"))
-    distribution = st.sidebar.selectbox("Distribution", _selectbox_options(filters_payload["distribution_policy"], "distribution"))
-    issuer = st.sidebar.selectbox("Issuer", _selectbox_options(filters_payload["issuer_top"], "issuer"))
-    hedged = st.sidebar.selectbox("Hedged", ["Any hedge state", "Yes", "No"])
-    page_size = st.sidebar.selectbox("Rows per page", [25, 50, 100], index=1)
+    _ensure_state_value("explorer_search", "")
+    _ensure_state_value("explorer_exchange", exchange_options[0], exchange_options)
+    _ensure_state_value("explorer_asset_class", asset_type_options[0], asset_type_options)
+    _ensure_state_value("explorer_geography_region", region_options[0], region_options)
+    _ensure_state_value("explorer_equity_size", size_options[0], size_options)
+    _ensure_state_value("explorer_equity_style", style_options[0], style_options)
+    _ensure_state_value("explorer_sector", sector_options[0], sector_options)
+    _ensure_state_value("explorer_bond_type", bond_type_options[0], bond_type_options)
+    _ensure_state_value("explorer_currency", currency_options[0], currency_options)
+    _ensure_state_value("explorer_distribution", distribution_options[0], distribution_options)
+    _ensure_state_value("explorer_issuer", issuer_options[0], issuer_options)
+    _ensure_state_value("explorer_hedged", hedged_options[0], hedged_options)
+    _ensure_state_value("explorer_page_size", 50, page_size_options)
+
+    search = st.sidebar.text_input("Search", placeholder="ISIN, fund name, ticker, issuer, benchmark", key="explorer_search")
+    exchange = st.sidebar.selectbox("Exchange", exchange_options, key="explorer_exchange")
+    asset_class = st.sidebar.selectbox("Asset type", asset_type_options, key="explorer_asset_class")
+    geography_region = st.sidebar.selectbox("Region", region_options, key="explorer_geography_region")
+    equity_size = st.sidebar.selectbox("Size", size_options, key="explorer_equity_size")
+    equity_style = st.sidebar.selectbox("Style", style_options, key="explorer_equity_style")
+    sector = st.sidebar.selectbox("Sector", sector_options, key="explorer_sector")
+    bond_type = st.sidebar.selectbox("Bond type", bond_type_options, key="explorer_bond_type")
+    currency = st.sidebar.selectbox("Currency", currency_options, key="explorer_currency")
+    distribution = st.sidebar.selectbox("Distribution", distribution_options, key="explorer_distribution")
+    issuer = st.sidebar.selectbox("Issuer", issuer_options, key="explorer_issuer")
+    hedged = st.sidebar.selectbox("Hedged", hedged_options, key="explorer_hedged")
+    page_size = int(st.sidebar.selectbox("Rows per page", page_size_options, key="explorer_page_size"))
 else:
     st.markdown(
         """
@@ -828,15 +962,15 @@ else:
     )
 
 if active_view == "Explorer":
-    sort_map = {"Fund name": "name", "Issuer": "issuer", "TER": "fee", "Asset type": "asset_class", "ISIN": "isin"}
-    sort_col, direction_col = st.columns([1.25, 0.75], gap="large")
-    with sort_col:
-        sort_label = _toggle_choice("Sort by", list(sort_map.keys()), default="Fund name", key="browse_sort_field")
-    with direction_col:
-        direction_label = _toggle_choice("Order", ["Ascending", "Descending"], default="Ascending", key="browse_sort_direction")
-    sort_direction = "asc" if direction_label == "Ascending" else "desc"
+    ter_sort_direction = st.session_state.get("browse_ter_sort_direction")
+    if ter_sort_direction not in {"asc", "desc"}:
+        ter_sort_direction = None
 
-    fund_params = {"limit": str(page_size), "sort": sort_map[sort_label], "direction": sort_direction}
+    fund_params = {
+        "limit": str(page_size),
+        "sort": "fee" if ter_sort_direction else "name",
+        "direction": str(ter_sort_direction or "asc"),
+    }
     if search:
         fund_params["q"] = search
     if selected := _selected_filter(asset_class, "Any asset type"):
@@ -864,9 +998,9 @@ if active_view == "Explorer":
     elif hedged == "No":
         fund_params["hedged"] = "false"
 
-    active_filters: list[str] = []
+    active_filters: list[dict[str, object]] = []
     if exchange != "Any exchange":
-        active_filters.append(f"Exchange: {exchange}")
+        active_filters.append({"label": f"Exchange: {exchange}", "state_key": "explorer_exchange", "default": exchange_options[0]})
     for key, label in (
         ("asset_class", "Asset type"),
         ("geography_region", "Region"),
@@ -879,13 +1013,34 @@ if active_view == "Explorer":
         ("currency", "Currency"),
     ):
         if fund_params.get(key):
-            active_filters.append(f"{label}: {fund_params[key]}")
+            state_key = {
+                "asset_class": "explorer_asset_class",
+                "geography_region": "explorer_geography_region",
+                "equity_size": "explorer_equity_size",
+                "equity_style": "explorer_equity_style",
+                "sector": "explorer_sector",
+                "bond_type": "explorer_bond_type",
+                "distribution_policy": "explorer_distribution",
+                "issuer": "explorer_issuer",
+                "currency": "explorer_currency",
+            }[key]
+            default_value = {
+                "explorer_asset_class": asset_type_options[0],
+                "explorer_geography_region": region_options[0],
+                "explorer_equity_size": size_options[0],
+                "explorer_equity_style": style_options[0],
+                "explorer_sector": sector_options[0],
+                "explorer_bond_type": bond_type_options[0],
+                "explorer_distribution": distribution_options[0],
+                "explorer_issuer": issuer_options[0],
+                "explorer_currency": currency_options[0],
+            }[state_key]
+            active_filters.append({"label": f"{label}: {fund_params[key]}", "state_key": state_key, "default": default_value})
     if fund_params.get("hedged"):
-        active_filters.append(f"Hedged: {fund_params['hedged']}")
+        active_filters.append({"label": f"Hedged: {hedged}", "state_key": "explorer_hedged", "default": hedged_options[0]})
     if search:
-        active_filters.append(f"Search: {search}")
-    _render_chip_row(active_filters or ["All active UCITS ETFs"], accent_first=True)
-    st.caption("Blank cells indicate data that is not currently available. `N.A.` is used only for bond type and duration on non-bond funds.")
+        active_filters.append({"label": f"Search: {search}", "state_key": "explorer_search", "default": ""})
+    _render_filter_tag_buttons(active_filters)
 
     filter_signature = tuple(sorted(fund_params.items()))
     if st.session_state.get("browse_filter_signature") != filter_signature:
@@ -912,9 +1067,34 @@ if active_view == "Explorer":
 
     fund_params["offset"] = str((page - 1) * page_size)
     funds_payload = load_funds_payload(db_path, tuple(sorted(fund_params.items())))
-    st.markdown(f"<div class='table-note'><span>Showing page {page} of {max_pages}</span><span>{funds_payload['total']} funds match the current filters</span></div>", unsafe_allow_html=True)
+    table_note_col, table_sort_col = st.columns([1.2, 0.48], gap="medium")
+    with table_note_col:
+        st.markdown(
+            f"<div class='table-note'><span>Showing page {page} of {max_pages}</span><span>{funds_payload['total']} funds match the current filters</span></div>",
+            unsafe_allow_html=True,
+        )
+    with table_sort_col:
+        ter_sort_cols = st.columns(2, gap="small")
+        with ter_sort_cols[0]:
+            st.button(
+                "TER ↑",
+                key="browse_ter_sort_asc",
+                type="primary" if ter_sort_direction == "asc" else "secondary",
+                use_container_width=True,
+                on_click=_toggle_ter_sort,
+                args=("asc",),
+            )
+        with ter_sort_cols[1]:
+            st.button(
+                "TER ↓",
+                key="browse_ter_sort_desc",
+                type="primary" if ter_sort_direction == "desc" else "secondary",
+                use_container_width=True,
+                on_click=_toggle_ter_sort,
+                args=("desc",),
+            )
 
-    fund_table = _fund_table(funds_payload["items"])
+    fund_table = _fund_table(funds_payload["items"], ter_sort_direction=ter_sort_direction)
     if fund_table.empty:
         st.info("No funds matched the current filters.")
     else:
@@ -973,26 +1153,6 @@ elif active_view == "Strategies":
             _render_weighted_ter_card(selected_rows)
 
 elif active_view == "Custom":
-    custom_ctrl_one, custom_ctrl_two = st.columns([0.95, 1.3], gap="medium")
-    custom_exchange_options = {"All exchanges": "ALL", "London": "XLON", "Xetra": "XETR"}
-    custom_exchange_label = custom_ctrl_one.selectbox("Exchange scope", list(custom_exchange_options.keys()), key="custom_venue")
-    custom_venue = custom_exchange_options[custom_exchange_label]
-    custom_currency_order = custom_ctrl_two.text_input(
-        "Preferred trading currencies",
-        value="USD,EUR,GBP",
-        key="custom_currency_order",
-    )
-    custom_bucket_count = int(
-        st.number_input(
-            "Number of buckets",
-            min_value=1,
-            max_value=10,
-            step=1,
-            value=3,
-            key="custom_bucket_count",
-        )
-    )
-
     st.markdown(
         """
         <div class="section-box">
@@ -1004,7 +1164,26 @@ elif active_view == "Custom":
         unsafe_allow_html=True,
     )
 
-    custom_rows, custom_total_weight, custom_selected_names, custom_has_missing_bucket = _collect_custom_bucket_inputs(custom_bucket_count)
+    custom_ctrl_one, custom_ctrl_two = st.columns([0.95, 1.3], gap="medium")
+    custom_exchange_options = {"All exchanges": "ALL", "London": "XLON", "Xetra": "XETR"}
+    custom_exchange_label = custom_ctrl_one.selectbox("Exchange scope", list(custom_exchange_options.keys()), key="custom_venue")
+    custom_venue = custom_exchange_options[custom_exchange_label]
+    custom_currency_order = custom_ctrl_two.text_input(
+        "Preferred trading currencies",
+        value="USD,EUR,GBP",
+        key="custom_currency_order",
+    )
+    custom_rows, custom_total_weight, custom_selected_names, custom_has_missing_bucket = _collect_custom_bucket_inputs()
+    current_bucket_count = len(_ensure_custom_bucket_rows())
+    st.button(
+        "+ Add bucket",
+        key="custom_bucket_add",
+        use_container_width=False,
+        disabled=current_bucket_count >= MAX_CUSTOM_BUCKETS,
+        on_click=_add_custom_bucket_row,
+    )
+    if current_bucket_count >= MAX_CUSTOM_BUCKETS:
+        st.caption("Maximum 10 buckets reached.")
     duplicate_bucket_names = sorted({name for name in custom_selected_names if custom_selected_names.count(name) > 1})
     valid_total = math.isclose(custom_total_weight, 100.0, abs_tol=0.05)
 
@@ -1017,17 +1196,6 @@ elif active_view == "Custom":
         st.warning(f"Target weights currently add to {custom_total_weight:.1f}%. Adjust them to 100.0%.")
     else:
         st.caption("Weights sum to 100.0%.")
-
-    st.markdown(
-        """
-        <div class="section-box">
-            <div class="eyebrow">Custom shortlist</div>
-            <h3>Review the live fund candidates for each custom bucket.</h3>
-            <p class="section-copy">The shortlist below uses the same ranking logic as the strategies tab. Pick a ticker inside the row to inspect alternatives for that sleeve.</p>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
 
     if custom_has_missing_bucket or duplicate_bucket_names or not valid_total:
         st.info("Complete the bucket selection and make the weights sum to 100% to render the custom shortlist.")
