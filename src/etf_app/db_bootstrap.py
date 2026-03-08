@@ -5,6 +5,7 @@ import json
 import tempfile
 from pathlib import Path
 from typing import Any, Mapping, Optional
+from urllib.parse import quote
 
 import requests
 
@@ -96,11 +97,11 @@ def _cache_target_path(
 def _metadata_matches(
     metadata: dict[str, str],
     *,
-    url: str,
+    source_key: str,
     version: Optional[str],
     sha256: Optional[str],
 ) -> bool:
-    if metadata.get("url") != url:
+    if metadata.get("source_key") != source_key:
         return False
     if version is not None and metadata.get("version") != version:
         return False
@@ -109,12 +110,14 @@ def _metadata_matches(
     return True
 
 
-def _download_remote_db(
+def _persist_download_stream(
     *,
-    url: str,
+    stream_response: requests.Response,
     target_path: Path,
     version: Optional[str],
     sha256: Optional[str],
+    metadata: dict[str, str],
+    source_label: str,
 ) -> Path:
     target_path.parent.mkdir(parents=True, exist_ok=True)
     temp_path = target_path.with_suffix(f"{target_path.suffix}.download")
@@ -123,22 +126,16 @@ def _download_remote_db(
     digest = hashlib.sha256() if expected_sha is not None else None
 
     try:
-        with requests.get(
-            url,
-            stream=True,
-            timeout=(20, 300),
-            headers={"User-Agent": "UCITS-ETF-Atlas/1.0"},
-        ) as response:
-            response.raise_for_status()
-            with temp_path.open("wb") as handle:
-                for chunk in response.iter_content(chunk_size=DOWNLOAD_CHUNK_SIZE):
-                    if chunk:
-                        handle.write(chunk)
-                        if digest is not None:
-                            digest.update(chunk)
-    except requests.RequestException as exc:
+        stream_response.raise_for_status()
+        with temp_path.open("wb") as handle:
+            for chunk in stream_response.iter_content(chunk_size=DOWNLOAD_CHUNK_SIZE):
+                if chunk:
+                    handle.write(chunk)
+                    if digest is not None:
+                        digest.update(chunk)
+    except (requests.RequestException, ValueError) as exc:
         temp_path.unlink(missing_ok=True)
-        raise RuntimeError(f"Failed to download the ETF database from `{url}`: {exc}") from exc
+        raise RuntimeError(f"Failed to download the ETF database from `{source_label}`: {exc}") from exc
     except OSError as exc:
         temp_path.unlink(missing_ok=True)
         raise RuntimeError(f"Failed to write the downloaded ETF database to `{target_path}`: {exc}") from exc
@@ -148,17 +145,115 @@ def _download_remote_db(
         if actual_sha != expected_sha:
             temp_path.unlink(missing_ok=True)
             raise RuntimeError(
-                f"Downloaded ETF database SHA-256 mismatch for `{url}`: expected {expected_sha}, got {actual_sha}."
+                f"Downloaded ETF database SHA-256 mismatch for `{source_label}`: expected {expected_sha}, got {actual_sha}."
             )
 
     temp_path.replace(target_path)
-    metadata = {"url": url}
+    persisted_metadata = {**metadata}
+    persisted_metadata["source_key"] = metadata["source_key"]
     if version is not None:
-        metadata["version"] = version
+        persisted_metadata["version"] = version
     if sha256 is not None:
-        metadata["sha256"] = sha256.lower()
-    _write_metadata(metadata_path, metadata)
+        persisted_metadata["sha256"] = sha256.lower()
+    _write_metadata(metadata_path, persisted_metadata)
     return target_path
+
+
+def _download_remote_db(
+    *,
+    url: str,
+    target_path: Path,
+    version: Optional[str],
+    sha256: Optional[str],
+) -> Path:
+    try:
+        with requests.get(
+            url,
+            stream=True,
+            timeout=(20, 300),
+            headers={"User-Agent": "UCITS-ETF-Atlas/1.0"},
+        ) as response:
+            return _persist_download_stream(
+                stream_response=response,
+                target_path=target_path,
+                version=version,
+                sha256=sha256,
+                metadata={"source_key": url, "url": url},
+                source_label=url,
+            )
+    except requests.RequestException as exc:
+        raise RuntimeError(f"Failed to download the ETF database from `{url}`: {exc}") from exc
+
+
+def _b2_setting(
+    key: str,
+    *,
+    secrets: Optional[Mapping[str, Any]],
+    env: Optional[Mapping[str, str]],
+) -> Optional[str]:
+    secret_key = f"b2_{key}"
+    secret_value = _mapping_get(secrets, secret_key)
+    if secret_value is not None:
+        return secret_value
+    return _mapping_get(env, f"B2_{key.upper()}")
+
+
+def _download_backblaze_private_db(
+    *,
+    key_id: str,
+    application_key: str,
+    bucket: str,
+    file_name: str,
+    target_path: Path,
+    version: Optional[str],
+    sha256: Optional[str],
+) -> Path:
+    auth_url = "https://api.backblazeb2.com/b2api/v3/b2_authorize_account"
+    try:
+        auth_response = requests.get(
+            auth_url,
+            auth=(key_id, application_key),
+            timeout=(20, 60),
+            headers={"User-Agent": "UCITS-ETF-Atlas/1.0"},
+        )
+        auth_response.raise_for_status()
+        auth_payload = auth_response.json()
+    except (requests.RequestException, ValueError) as exc:
+        raise RuntimeError(f"Failed to authorize Backblaze B2 application key: {exc}") from exc
+
+    download_base_url = _normalized_text(auth_payload.get("downloadUrl"))
+    authorization_token = _normalized_text(auth_payload.get("authorizationToken"))
+    if download_base_url is None or authorization_token is None:
+        raise RuntimeError("Backblaze B2 authorize response did not include `downloadUrl` and `authorizationToken`.")
+
+    quoted_bucket = quote(bucket, safe="")
+    quoted_file_name = quote(file_name, safe="/")
+    source_key = f"b2://{bucket}/{file_name}"
+    download_url = f"{download_base_url}/file/{quoted_bucket}/{quoted_file_name}"
+    try:
+        with requests.get(
+            download_url,
+            stream=True,
+            timeout=(20, 300),
+            headers={
+                "Authorization": authorization_token,
+                "User-Agent": "UCITS-ETF-Atlas/1.0",
+            },
+        ) as response:
+            return _persist_download_stream(
+                stream_response=response,
+                target_path=target_path,
+                version=version,
+                sha256=sha256,
+                metadata={
+                    "source_key": source_key,
+                    "b2_bucket": bucket,
+                    "b2_file_name": file_name,
+                },
+                source_label=source_key,
+            )
+    except requests.RequestException as exc:
+        raise RuntimeError(f"Failed to download the ETF database from `{source_key}`: {exc}") from exc
 
 
 def resolve_db_path(
@@ -173,23 +268,50 @@ def resolve_db_path(
     if local_candidate.exists():
         return local_candidate
 
-    db_url = _setting_value("db_url", secrets=secrets, env=env, env_key="ETF_APP_DB_URL")
-    if db_url is None:
-        raise FileNotFoundError(
-            f"Database not found at `{local_candidate}`. "
-            "Set `ETF_APP_DB_PATH` or configure `db_url` / `ETF_APP_DB_URL`."
-        )
-
     db_version = _setting_value("db_version", secrets=secrets, env=env, env_key="ETF_APP_DB_VERSION")
     db_sha256 = _setting_value("db_sha256", secrets=secrets, env=env, env_key="ETF_APP_DB_SHA256")
-    target_path = _cache_target_path(
-        url=db_url,
-        default_name=Path(default_path).name,
-        secrets=secrets,
-        env=env,
-        cache_root=cache_root,
+    db_url = _setting_value("db_url", secrets=secrets, env=env, env_key="ETF_APP_DB_URL")
+    if db_url is not None:
+        target_path = _cache_target_path(
+            url=db_url,
+            default_name=Path(default_path).name,
+            secrets=secrets,
+            env=env,
+            cache_root=cache_root,
+        )
+        metadata = _load_metadata(_metadata_path(target_path))
+        if target_path.exists() and _metadata_matches(metadata, source_key=db_url, version=db_version, sha256=db_sha256):
+            return target_path
+        return _download_remote_db(url=db_url, target_path=target_path, version=db_version, sha256=db_sha256)
+
+    b2_key_id = _b2_setting("key_id", secrets=secrets, env=env)
+    b2_application_key = _b2_setting("application_key", secrets=secrets, env=env)
+    b2_bucket = _b2_setting("bucket", secrets=secrets, env=env)
+    b2_file_name = _b2_setting("file_name", secrets=secrets, env=env) or Path(default_path).name
+    if b2_key_id and b2_application_key and b2_bucket:
+        source_key = f"b2://{b2_bucket}/{b2_file_name}"
+        target_path = _cache_target_path(
+            url=source_key,
+            default_name=Path(b2_file_name).name,
+            secrets=secrets,
+            env=env,
+            cache_root=cache_root,
+        )
+        metadata = _load_metadata(_metadata_path(target_path))
+        if target_path.exists() and _metadata_matches(metadata, source_key=source_key, version=db_version, sha256=db_sha256):
+            return target_path
+        return _download_backblaze_private_db(
+            key_id=b2_key_id,
+            application_key=b2_application_key,
+            bucket=b2_bucket,
+            file_name=b2_file_name,
+            target_path=target_path,
+            version=db_version,
+            sha256=db_sha256,
+        )
+
+    raise FileNotFoundError(
+        f"Database not found at `{local_candidate}`. "
+        "Set `ETF_APP_DB_PATH`, configure `db_url` / `ETF_APP_DB_URL`, "
+        "or provide Backblaze B2 settings (`b2_key_id`, `b2_application_key`, `b2_bucket`)."
     )
-    metadata = _load_metadata(_metadata_path(target_path))
-    if target_path.exists() and _metadata_matches(metadata, url=db_url, version=db_version, sha256=db_sha256):
-        return target_path
-    return _download_remote_db(url=db_url, target_path=target_path, version=db_version, sha256=db_sha256)

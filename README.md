@@ -76,6 +76,17 @@ db_version = "2026-03-08"
 db_sha256 = "replace-with-the-file-sha256"
 ```
 
+Private Backblaze B2 buckets are also supported. Provide a bucket-scoped read key in Streamlit secrets:
+
+```toml
+b2_key_id = "your-key-id"
+b2_application_key = "your-read-only-app-key"
+b2_bucket = "your-private-bucket-name"
+b2_file_name = "stage1_etf.db"
+db_version = "2026-03-09"
+db_sha256 = "replace-with-the-file-sha256"
+```
+
 Optional deployment settings:
 
 - `db_cache_name`: override the cached filename on the server

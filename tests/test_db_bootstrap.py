@@ -10,8 +10,9 @@ from etf_app.db_bootstrap import resolve_db_path
 
 
 class _FakeResponse:
-    def __init__(self, payload: bytes) -> None:
+    def __init__(self, payload: bytes, *, json_payload: dict | None = None) -> None:
         self._payload = payload
+        self._json_payload = json_payload
 
     def __enter__(self) -> "_FakeResponse":
         return self
@@ -25,6 +26,11 @@ class _FakeResponse:
     def iter_content(self, chunk_size: int):
         for idx in range(0, len(self._payload), chunk_size):
             yield self._payload[idx : idx + chunk_size]
+
+    def json(self) -> dict:
+        if self._json_payload is None:
+            raise ValueError("json payload not set")
+        return self._json_payload
 
 
 def test_resolve_db_path_prefers_existing_local_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -77,6 +83,7 @@ def test_resolve_db_path_downloads_remote_db_and_writes_metadata(
     metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
     assert metadata == {
         "sha256": expected_sha,
+        "source_key": "https://example.com/releases/stage1_etf.db",
         "url": "https://example.com/releases/stage1_etf.db",
         "version": "2026-03-08",
     }
@@ -125,3 +132,58 @@ def test_resolve_db_path_raises_on_sha_mismatch(tmp_path: Path, monkeypatch: pyt
             env={},
             cache_root=tmp_path / "cache",
         )
+
+
+def test_resolve_db_path_downloads_from_private_backblaze_bucket(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = b"private-b2-db"
+    expected_sha = hashlib.sha256(payload).hexdigest()
+    calls: list[str] = []
+
+    def _fake_get(url: str, **kwargs) -> _FakeResponse:
+        calls.append(url)
+        if url.endswith("/b2api/v3/b2_authorize_account"):
+            assert kwargs["auth"] == ("key-id", "app-key")
+            return _FakeResponse(
+                b"",
+                json_payload={
+                    "authorizationToken": "auth-token",
+                    "downloadUrl": "https://download.backblazeb2.com",
+                },
+            )
+        assert kwargs["headers"]["Authorization"] == "auth-token"
+        return _FakeResponse(payload)
+
+    monkeypatch.setattr("etf_app.db_bootstrap.requests.get", _fake_get)
+
+    resolved = resolve_db_path(
+        default_path="missing-stage1_etf.db",
+        secrets={
+            "b2_key_id": "key-id",
+            "b2_application_key": "app-key",
+            "b2_bucket": "atlas-private",
+            "b2_file_name": "stage1_etf.db",
+            "db_version": "2026-03-09",
+            "db_sha256": expected_sha,
+        },
+        env={},
+        cache_root=tmp_path / "cache",
+    )
+
+    assert calls == [
+        "https://api.backblazeb2.com/b2api/v3/b2_authorize_account",
+        "https://download.backblazeb2.com/file/atlas-private/stage1_etf.db",
+    ]
+    assert resolved.read_bytes() == payload
+
+    metadata_path = Path(f"{resolved}.meta.json")
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    assert metadata == {
+        "b2_bucket": "atlas-private",
+        "b2_file_name": "stage1_etf.db",
+        "sha256": expected_sha,
+        "source_key": "b2://atlas-private/stage1_etf.db",
+        "version": "2026-03-09",
+    }
