@@ -5,6 +5,7 @@ import math
 import os
 from pathlib import Path
 from typing import Optional
+from urllib.parse import urlencode
 
 import pandas as pd
 import streamlit as st
@@ -156,17 +157,45 @@ st.markdown(
     .filter-tag {
         display: flex;
         align-items: center;
-        min-height: 2.8rem;
+        min-height: 2.35rem;
         border-radius: 999px;
-        padding: 0.32rem 1rem;
-        background: rgba(33,69,63,0.08);
-        border: 1px solid rgba(33,69,63,0.14);
+        padding: 0.22rem 0.88rem;
+        background: rgba(33,69,63,0.06);
+        border: 1px solid rgba(33,69,63,0.12);
         color: var(--moss);
-        font-size: 0.9rem;
+        font-size: 0.88rem;
         font-weight: 600;
         white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
+    }
+    .table-header-sort {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.4rem;
+    }
+    .table-sort-link {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 1.15rem;
+        height: 1.15rem;
+        border-radius: 999px;
+        color: #7a8883;
+        text-decoration: none;
+        border: 1px solid transparent;
+        font-size: 0.82rem;
+        line-height: 1;
+    }
+    .table-sort-link:hover {
+        color: var(--moss);
+        border-color: rgba(33,69,63,0.18);
+        background: rgba(33,69,63,0.08);
+    }
+    .table-sort-link.active {
+        color: #fff;
+        background: var(--moss);
+        border-color: var(--moss);
     }
     .detail-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.7rem; margin-top: 0.95rem; }
     .detail-tile { background: rgba(246,241,232,0.86); border: 1px solid var(--line); border-radius: 16px; padding: 0.72rem 0.82rem; }
@@ -233,6 +262,27 @@ st.markdown(
     [data-testid="stButton"] button {
         border-radius: 14px; border: 1px solid var(--line); background: rgba(255,255,255,0.9);
         color: var(--ink); box-shadow: none; min-height: 2.8rem; padding: 0.58rem 0.9rem; font-size: 0.98rem; font-weight: 600;
+    }
+    [data-testid="stButton"] button[kind="primary"],
+    [data-testid="stButton"] button[data-testid="baseButton-primary"] {
+        width: 2.25rem;
+        min-width: 2.25rem;
+        max-width: 2.25rem;
+        min-height: 2.25rem;
+        height: 2.25rem;
+        padding: 0;
+        border-radius: 999px;
+        background: #c64d49 !important;
+        border-color: #b2423e !important;
+        color: #fff !important;
+        box-shadow: none !important;
+        font-size: 1.02rem !important;
+        line-height: 1 !important;
+    }
+    [data-testid="stButton"] button[kind="primary"]:hover,
+    [data-testid="stButton"] button[data-testid="baseButton-primary"]:hover {
+        background: #b2423e !important;
+        border-color: #a33a36 !important;
     }
     @media (max-width: 1280px) {
         .metric-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -511,6 +561,41 @@ def _selectbox_label(value: str, *, placeholder: str, field: str) -> str:
     return _format_filter_value(field, value)
 
 
+def _current_query_params() -> dict[str, str]:
+    try:
+        raw_params = st.query_params
+    except Exception:
+        return {}
+    params: dict[str, str] = {}
+    for key, value in raw_params.items():
+        if isinstance(value, list):
+            if value:
+                params[str(key)] = str(value[-1])
+            continue
+        text = _normalized_text(value)
+        if text is not None:
+            params[str(key)] = text
+    return params
+
+
+def _query_href(**updates: Optional[str]) -> str:
+    params = _current_query_params()
+    for key, value in updates.items():
+        if value in (None, "", "none"):
+            params.pop(key, None)
+        else:
+            params[str(key)] = str(value)
+    query_string = urlencode(params)
+    return f"?{query_string}" if query_string else "?"
+
+
+def _ter_sort_query_direction() -> Optional[str]:
+    direction = _token_key(_current_query_params().get("ter_sort"))
+    if direction in {"asc", "desc"}:
+        return direction
+    return None
+
+
 def _region_label(item: dict[str, object]) -> str:
     return _display_value(_pretty_label(item.get("geography_region"), REGION_LABELS))
 
@@ -545,12 +630,7 @@ def _duration_label(item: dict[str, object]) -> str:
     return _display_bond_value(_pretty_label(item.get("duration_bucket"), DURATION_LABELS), is_bond=_asset_key(item) == "bond")
 
 
-def _fund_table(items: list[dict[str, object]], *, ter_sort_direction: Optional[str] = None) -> pd.DataFrame:
-    ter_header = "TER"
-    if ter_sort_direction == "asc":
-        ter_header = "TER ^"
-    elif ter_sort_direction == "desc":
-        ter_header = "TER v"
+def _fund_table(items: list[dict[str, object]]) -> pd.DataFrame:
     rows: list[dict[str, str]] = []
     for item in items:
         rows.append(
@@ -564,7 +644,7 @@ def _fund_table(items: list[dict[str, object]], *, ter_sort_direction: Optional[
                 "Domicile": _display_value(_pretty_label(item.get("domicile_country"))),
                 "Distribution": _display_value(_format_distribution(item.get("distribution_policy"))),
                 "Currency": _display_value(_normalized_known_text(item.get("currency"))),
-                ter_header: _display_value(_format_percentage(item.get("ongoing_charges"))),
+                "TER": _display_value(_format_percentage(item.get("ongoing_charges"))),
                 "Region": _region_label(item),
                 "Size": _equity_size_label(item),
                 "Style": _equity_style_label(item),
@@ -574,8 +654,7 @@ def _fund_table(items: list[dict[str, object]], *, ter_sort_direction: Optional[
                 "Duration": _duration_label(item),
             }
         )
-    columns = [column if column != "TER" else ter_header for column in EXPLORER_COLUMNS]
-    return pd.DataFrame(rows, columns=columns)
+    return pd.DataFrame(rows, columns=EXPLORER_COLUMNS)
 
 
 def _bucket_label(value: object) -> str:
@@ -751,6 +830,7 @@ def _collect_custom_bucket_inputs() -> tuple[list[dict[str, object]], float, lis
         label_cols = st.columns([1.58, 0.74, 0.22], gap="small")
         label_cols[0].markdown(f"<div class='control-label'>Bucket {idx + 1}</div>", unsafe_allow_html=True)
         label_cols[1].markdown(f"<div class='control-label'>Target weight {idx + 1}</div>", unsafe_allow_html=True)
+        label_cols[2].markdown("<div class='control-label'>&nbsp;</div>", unsafe_allow_html=True)
 
         row_cols = st.columns([1.58, 0.74, 0.22], gap="small")
         with row_cols[0]:
@@ -773,10 +853,10 @@ def _collect_custom_bucket_inputs() -> tuple[list[dict[str, object]], float, lis
             )
         with row_cols[2]:
             st.button(
-                "X",
+                "×",
                 key=f"custom_bucket_remove_{row_id}",
                 help="Remove bucket",
-                use_container_width=True,
+                type="primary",
                 disabled=len(row_ids) <= 1,
                 on_click=_remove_custom_bucket_row,
                 args=(row_id,),
@@ -796,12 +876,6 @@ def _reset_explorer_filter(key: str, default: object) -> None:
     st.session_state["browse_page"] = 1
 
 
-def _toggle_ter_sort(direction: str) -> None:
-    current = st.session_state.get("browse_ter_sort_direction")
-    st.session_state["browse_ter_sort_direction"] = None if current == direction else direction
-    st.session_state["browse_page"] = 1
-
-
 def _render_filter_tag_buttons(tags: list[dict[str, object]]) -> None:
     if not tags:
         _render_chip_row(["All active UCITS ETFs"], accent_first=True)
@@ -809,8 +883,8 @@ def _render_filter_tag_buttons(tags: list[dict[str, object]]) -> None:
     for row_index, chunk in enumerate(_chunked(tags, 4)):
         width_spec: list[float] = []
         for tag in chunk:
-            label_width = min(4.8, max(1.8, len(str(tag["label"])) * 0.11))
-            width_spec.extend([label_width, 0.32])
+            label_width = min(2.9, max(1.35, len(str(tag["label"])) * 0.06))
+            width_spec.extend([label_width, 0.2])
         width_spec.append(1.0)
         cols = st.columns(width_spec, gap="small")
         col_index = 0
@@ -819,10 +893,10 @@ def _render_filter_tag_buttons(tags: list[dict[str, object]]) -> None:
                 st.markdown(f"<div class='filter-tag'>{_escape(tag['label'])}</div>", unsafe_allow_html=True)
             with cols[col_index + 1]:
                 st.button(
-                    "X",
+                    "×",
                     key=f"explorer_filter_tag_{row_index}_{tag['state_key']}",
                     help=f"Remove {tag['label']}",
-                    use_container_width=True,
+                    type="primary",
                     on_click=_reset_explorer_filter,
                     args=(str(tag["state_key"]), tag["default"]),
                 )
@@ -941,6 +1015,37 @@ def _render_chip_row(values: list[str], *, accent_first: bool = False) -> None:
 
 def _render_static_table(df: pd.DataFrame, *, table_class: str, height: int) -> None:
     table_html = df.to_html(index=False, classes=table_class, border=0, escape=True)
+    st.markdown(
+        f"<div class='table-shell'><div class='table-scroll' style='max-height:{height}px'>{table_html}</div></div>",
+        unsafe_allow_html=True,
+    )
+
+
+def _render_explorer_table(df: pd.DataFrame, *, height: int, ter_sort_direction: Optional[str]) -> None:
+    if df.empty:
+        return
+    asc_href = _query_href(ter_sort=None if ter_sort_direction == "asc" else "asc")
+    desc_href = _query_href(ter_sort=None if ter_sort_direction == "desc" else "desc")
+    head_cells: list[str] = []
+    for column in df.columns:
+        if column == "TER":
+            head_cells.append(
+                "<th><div class='table-header-sort'>"
+                "<span>TER</span>"
+                f"<a class='table-sort-link{' active' if ter_sort_direction == 'asc' else ''}' href='{_escape(asc_href)}' target='_self'>&uarr;</a>"
+                f"<a class='table-sort-link{' active' if ter_sort_direction == 'desc' else ''}' href='{_escape(desc_href)}' target='_self'>&darr;</a>"
+                "</div></th>"
+            )
+        else:
+            head_cells.append(f"<th>{_escape(column)}</th>")
+    body_rows: list[str] = []
+    for row in df.itertuples(index=False, name=None):
+        cells = "".join(f"<td>{_escape(value)}</td>" for value in row)
+        body_rows.append(f"<tr>{cells}</tr>")
+    table_html = (
+        f"<table class='browser-table'><thead><tr>{''.join(head_cells)}</tr></thead>"
+        f"<tbody>{''.join(body_rows)}</tbody></table>"
+    )
     st.markdown(
         f"<div class='table-shell'><div class='table-scroll' style='max-height:{height}px'>{table_html}</div></div>",
         unsafe_allow_html=True,
@@ -1080,9 +1185,8 @@ else:
     )
 
 if active_view == "Explorer":
-    ter_sort_direction = st.session_state.get("browse_ter_sort_direction")
-    if ter_sort_direction not in {"asc", "desc"}:
-        ter_sort_direction = None
+    ter_sort_direction = _ter_sort_query_direction()
+    st.session_state["browse_ter_sort_direction"] = ter_sort_direction
 
     fund_params = {
         "limit": str(page_size),
@@ -1191,38 +1295,16 @@ if active_view == "Explorer":
 
     fund_params["offset"] = str((page - 1) * page_size)
     funds_payload = load_funds_payload(db_path, tuple(sorted(fund_params.items())))
-    table_note_col, table_sort_col = st.columns([1.2, 0.48], gap="medium")
-    with table_note_col:
-        st.markdown(
-            f"<div class='table-note'><span>Showing page {page} of {max_pages}</span><span>{funds_payload['total']} funds match the current filters</span></div>",
-            unsafe_allow_html=True,
-        )
-    with table_sort_col:
-        ter_sort_cols = st.columns(2, gap="small")
-        with ter_sort_cols[0]:
-            st.button(
-                "TER ^",
-                key="browse_ter_sort_asc",
-                type="primary" if ter_sort_direction == "asc" else "secondary",
-                use_container_width=True,
-                on_click=_toggle_ter_sort,
-                args=("asc",),
-            )
-        with ter_sort_cols[1]:
-            st.button(
-                "TER v",
-                key="browse_ter_sort_desc",
-                type="primary" if ter_sort_direction == "desc" else "secondary",
-                use_container_width=True,
-                on_click=_toggle_ter_sort,
-                args=("desc",),
-            )
+    st.markdown(
+        f"<div class='table-note'><span>Showing page {page} of {max_pages}</span><span>{funds_payload['total']} funds match the current filters</span></div>",
+        unsafe_allow_html=True,
+    )
 
-    fund_table = _fund_table(funds_payload["items"], ter_sort_direction=ter_sort_direction)
+    fund_table = _fund_table(funds_payload["items"])
     if fund_table.empty:
         st.info("No funds matched the current filters.")
     else:
-        _render_static_table(fund_table, table_class="browser-table", height=620)
+        _render_explorer_table(fund_table, height=620, ter_sort_direction=ter_sort_direction)
 
 elif active_view == "Strategies":
     strategy_catalog = {str(strategy["name"]): strategy for strategy in STRATEGIES}
