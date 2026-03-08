@@ -11,12 +11,13 @@ import streamlit as st
 
 from etf_app.api import (
     get_completeness_snapshot,
+    get_custom_strategy_snapshot,
     get_strategy_snapshot,
     list_filter_options,
     list_funds,
     open_read_conn,
 )
-from etf_app.recommend import STRATEGIES
+from etf_app.recommend import BUCKET_OPTIONS, STRATEGIES
 
 
 MISSING_DISPLAY = ""
@@ -65,16 +66,9 @@ DURATION_LABELS = {
     "intermediate": "Intermediate",
     "long": "Long",
 }
-BUCKET_LABELS = {
-    "equity_global": "Global equity",
-    "equity_small_cap_value": "Small-cap value",
-    "long_govt_bonds": "Long government bonds",
-    "intermediate_govt_bonds": "Intermediate government bonds",
-    "long_bonds": "Long bonds",
-    "short_bonds": "Short bonds",
-    "cash": "Cash",
-    "gold": "Gold",
-}
+BUCKET_LABELS = {str(item["bucket_name"]): str(item["label"]) for item in BUCKET_OPTIONS}
+BUCKET_PICKER_LABELS = {str(item["bucket_name"]): str(item["picker_label"]) for item in BUCKET_OPTIONS}
+CUSTOM_BUCKET_PLACEHOLDER = "__choose_bucket__"
 STRATEGY_UI_TOP_N = 5000
 
 EXPLORER_COLUMNS = [
@@ -248,6 +242,30 @@ def load_strategy_payload(
         allow_missing_fees=allow_missing_fees,
         allow_missing_currency=allow_missing_currency,
         strategy_name=strategy_name,
+    )
+
+
+@st.cache_data(show_spinner=False, ttl=120)
+def load_custom_strategy_payload(
+    db_path: str,
+    venue: str,
+    preferred_currency_order: str,
+    bucket_items: tuple[tuple[str, float], ...],
+    allow_missing_fees: bool,
+    allow_missing_currency: bool,
+) -> dict[str, object]:
+    return _with_conn(
+        db_path,
+        get_custom_strategy_snapshot,
+        venue=venue,
+        preferred_currency_order=preferred_currency_order,
+        top_n=STRATEGY_UI_TOP_N,
+        allow_missing_fees=allow_missing_fees,
+        allow_missing_currency=allow_missing_currency,
+        buckets=[
+            {"bucket_name": bucket_name, "target_weight": float(target_weight)}
+            for bucket_name, target_weight in bucket_items
+        ],
     )
 
 
@@ -501,8 +519,10 @@ def _strategy_bucket_asset_label(bucket_name: str, selected_row: Optional[dict[s
         return "Bond"
     if bucket_name == "cash":
         return "Cash"
-    if bucket_name == "gold":
+    if bucket_name in {"gold", "silver", "industrial_metals"} or "commodit" in bucket_name:
         return "Commodity"
+    if bucket_name == "multi_asset":
+        return "Multi-asset"
     return MISSING_DISPLAY
 
 
@@ -543,6 +563,82 @@ def _weighted_strategy_ter(rows: list[dict[str, object]]) -> tuple[Optional[floa
     if covered_weight <= 0:
         return None, covered_weight, total_weight
     return weighted_total / covered_weight, covered_weight, total_weight
+
+
+def _render_weighted_ter_card(rows: list[dict[str, object]]) -> None:
+    weighted_ter, covered_weight, total_weight = _weighted_strategy_ter(rows)
+    weighted_ter_label = _display_value(_format_percentage(weighted_ter))
+    weighted_ter_meta = (
+        f"Based on {covered_weight:.0f}% of target weight"
+        if total_weight > 0
+        else "No selected sleeves"
+    )
+    if total_weight > covered_weight and total_weight > 0:
+        weighted_ter_meta = f"{weighted_ter_meta} ({total_weight:.0f}% total target)"
+    st.markdown(
+        f"<div class='stat-card'><span>Weighted TER</span><strong>{_escape(weighted_ter_label)}</strong><em>{_escape(weighted_ter_meta)}</em></div>",
+        unsafe_allow_html=True,
+    )
+
+
+def _custom_bucket_default(index: int) -> tuple[str, float]:
+    defaults = [
+        ("equity_global", 60.0),
+        ("intermediate_govt_bonds", 30.0),
+        ("cash", 10.0),
+    ]
+    if index < len(defaults):
+        return defaults[index]
+    return CUSTOM_BUCKET_PLACEHOLDER, 0.0
+
+
+def _custom_bucket_picker_label(bucket_name: str) -> str:
+    if bucket_name == CUSTOM_BUCKET_PLACEHOLDER:
+        return "Choose bucket"
+    return BUCKET_PICKER_LABELS.get(bucket_name, bucket_name)
+
+
+def _collect_custom_bucket_inputs(bucket_count: int) -> tuple[list[dict[str, object]], float, list[str], bool]:
+    rows: list[dict[str, object]] = []
+    total_weight = 0.0
+    selected_names: list[str] = []
+    has_missing_bucket = False
+    bucket_options = [CUSTOM_BUCKET_PLACEHOLDER] + list(BUCKET_PICKER_LABELS.keys())
+
+    for idx in range(bucket_count):
+        default_bucket, default_weight = _custom_bucket_default(idx)
+        bucket_key = f"custom_bucket_name_{idx}"
+        weight_key = f"custom_bucket_weight_{idx}"
+        if bucket_key not in st.session_state:
+            st.session_state[bucket_key] = default_bucket
+        if weight_key not in st.session_state:
+            st.session_state[weight_key] = default_weight
+
+        row_cols = st.columns([1.65, 0.75], gap="medium")
+        with row_cols[0]:
+            bucket_name = st.selectbox(
+                f"Bucket {idx + 1}",
+                bucket_options,
+                key=bucket_key,
+                format_func=_custom_bucket_picker_label,
+            )
+        with row_cols[1]:
+            target_weight = st.number_input(
+                f"Target weight {idx + 1}",
+                min_value=0.0,
+                max_value=100.0,
+                step=1.0,
+                format="%.1f",
+                key=weight_key,
+            )
+        total_weight += float(target_weight)
+        if bucket_name == CUSTOM_BUCKET_PLACEHOLDER:
+            has_missing_bucket = True
+        else:
+            selected_names.append(bucket_name)
+        rows.append({"bucket_name": bucket_name, "target_weight": float(target_weight)})
+
+    return rows, total_weight, selected_names, has_missing_bucket
 
 
 def _render_strategy_bucket_table(strategy: dict[str, object]) -> list[dict[str, object]]:
@@ -686,7 +782,7 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-active_view = _toggle_choice("View", ["Explorer", "Strategies", "Coverage"], default="Explorer", key="active_view")
+active_view = _toggle_choice("View", ["Explorer", "Strategies", "Coverage", "Custom"], default="Explorer", key="active_view")
 if active_view == "Explorer":
     st.markdown(
         """
@@ -873,22 +969,88 @@ elif active_view == "Strategies":
         st.caption("Funds available are unbounded in the UI: each sleeve includes every ranked candidate returned by the final bucket filter.")
         weighted_ter_slot = st.empty()
         selected_rows = _render_strategy_bucket_table(selected_strategy)
-        weighted_ter, covered_weight, total_weight = _weighted_strategy_ter(selected_rows)
-        weighted_ter_label = _display_value(_format_percentage(weighted_ter))
-        weighted_ter_meta = (
-            f"Based on {covered_weight:.0f}% of target weight"
-            if total_weight > 0
-            else "No selected sleeves"
-        )
-        if total_weight > covered_weight and total_weight > 0:
-            weighted_ter_meta = f"{weighted_ter_meta} ({total_weight:.0f}% total target)"
         with weighted_ter_slot.container():
-            st.markdown(
-                f"<div class='stat-card'><span>Weighted TER</span><strong>{_escape(weighted_ter_label)}</strong><em>{_escape(weighted_ter_meta)}</em></div>",
-                unsafe_allow_html=True,
-            )
+            _render_weighted_ter_card(selected_rows)
 
-else:
+elif active_view == "Custom":
+    custom_ctrl_one, custom_ctrl_two = st.columns([0.95, 1.3], gap="medium")
+    custom_exchange_options = {"All exchanges": "ALL", "London": "XLON", "Xetra": "XETR"}
+    custom_exchange_label = custom_ctrl_one.selectbox("Exchange scope", list(custom_exchange_options.keys()), key="custom_venue")
+    custom_venue = custom_exchange_options[custom_exchange_label]
+    custom_currency_order = custom_ctrl_two.text_input(
+        "Preferred trading currencies",
+        value="USD,EUR,GBP",
+        key="custom_currency_order",
+    )
+    custom_bucket_count = int(
+        st.number_input(
+            "Number of buckets",
+            min_value=1,
+            max_value=10,
+            step=1,
+            value=3,
+            key="custom_bucket_count",
+        )
+    )
+
+    st.markdown(
+        """
+        <div class="section-box">
+            <div class="eyebrow">Custom bucket mix</div>
+            <h3>Build your own allocation from the bucket library.</h3>
+            <p class="section-copy">Choose up to 10 sleeves, assign their target weights, and keep the total at exactly 100% before the shortlist is generated.</p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    custom_rows, custom_total_weight, custom_selected_names, custom_has_missing_bucket = _collect_custom_bucket_inputs(custom_bucket_count)
+    duplicate_bucket_names = sorted({name for name in custom_selected_names if custom_selected_names.count(name) > 1})
+    valid_total = math.isclose(custom_total_weight, 100.0, abs_tol=0.05)
+
+    if custom_has_missing_bucket:
+        st.warning("Choose a bucket for every row before generating the shortlist.")
+    if duplicate_bucket_names:
+        duplicate_labels = ", ".join(_bucket_label(name) for name in duplicate_bucket_names)
+        st.warning(f"Use each bucket only once. Duplicate selections: {duplicate_labels}.")
+    if not valid_total:
+        st.warning(f"Target weights currently add to {custom_total_weight:.1f}%. Adjust them to 100.0%.")
+    else:
+        st.caption("Weights sum to 100.0%.")
+
+    st.markdown(
+        """
+        <div class="section-box">
+            <div class="eyebrow">Custom shortlist</div>
+            <h3>Review the live fund candidates for each custom bucket.</h3>
+            <p class="section-copy">The shortlist below uses the same ranking logic as the strategies tab. Pick a ticker inside the row to inspect alternatives for that sleeve.</p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    if custom_has_missing_bucket or duplicate_bucket_names or not valid_total:
+        st.info("Complete the bucket selection and make the weights sum to 100% to render the custom shortlist.")
+    else:
+        custom_payload = load_custom_strategy_payload(
+            db_path,
+            custom_venue,
+            custom_currency_order,
+            tuple(
+                (str(row["bucket_name"]), float(row["target_weight"]))
+                for row in custom_rows
+            ),
+            False,
+            False,
+        )
+        custom_strategy = custom_payload["strategies"][0]
+        st.caption("Funds available are unbounded in the UI: each sleeve includes every ranked candidate returned by the final bucket filter.")
+        weighted_ter_slot = st.empty()
+        selected_rows = _render_strategy_bucket_table(custom_strategy)
+        with weighted_ter_slot.container():
+            _render_weighted_ter_card(selected_rows)
+
+elif active_view == "Coverage":
     st.markdown(
         """
         <div class="section-box">

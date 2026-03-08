@@ -303,6 +303,114 @@ STRATEGIES = (
 
 
 @dataclass(frozen=True)
+class BucketSpec:
+    bucket_name: str
+    label: str
+    category: str
+    kind: str = "generic"
+    asset_class: Optional[str] = None
+    geography_region: Optional[str] = None
+    equity_size: Optional[str] = None
+    equity_style: Optional[str] = None
+    sector: Optional[str] = None
+    bond_type: Optional[str] = None
+    duration_bucket: Optional[str] = None
+    commodity_type: Optional[str] = None
+    govt_only: bool = False
+
+
+def _bucket_spec(
+    bucket_name: str,
+    label: str,
+    category: str,
+    **kwargs: object,
+) -> BucketSpec:
+    return BucketSpec(
+        bucket_name=bucket_name,
+        label=label,
+        category=category,
+        **kwargs,
+    )
+
+
+BUCKET_SPECS = (
+    _bucket_spec("equity_global", "Global equity", "Equity", kind="core_global", asset_class="equity", geography_region="global"),
+    _bucket_spec("equity_us", "US equity", "Equity", asset_class="equity", geography_region="us"),
+    _bucket_spec("equity_europe", "Europe equity", "Equity", asset_class="equity", geography_region="europe"),
+    _bucket_spec("equity_asia", "Asia equity", "Equity", asset_class="equity", geography_region="asia"),
+    _bucket_spec("equity_em", "Emerging markets equity", "Equity", asset_class="equity", geography_region="em"),
+    _bucket_spec("equity_small_cap_value", "Global small-cap value", "Equity", kind="small_cap_value", asset_class="equity", geography_region="global", equity_size="small", equity_style="value"),
+    _bucket_spec("equity_global_large_blend", "Global large blend", "Equity", asset_class="equity", geography_region="global", equity_size="large", equity_style="blend"),
+    _bucket_spec("equity_global_large_value", "Global large value", "Equity", asset_class="equity", geography_region="global", equity_size="large", equity_style="value"),
+    _bucket_spec("equity_global_large_growth", "Global large growth", "Equity", asset_class="equity", geography_region="global", equity_size="large", equity_style="growth"),
+    _bucket_spec("equity_global_mid_blend", "Global mid blend", "Equity", asset_class="equity", geography_region="global", equity_size="mid", equity_style="blend"),
+    _bucket_spec("equity_global_mid_value", "Global mid value", "Equity", asset_class="equity", geography_region="global", equity_size="mid", equity_style="value"),
+    _bucket_spec("equity_global_mid_growth", "Global mid growth", "Equity", asset_class="equity", geography_region="global", equity_size="mid", equity_style="growth"),
+    _bucket_spec("equity_global_small_blend", "Global small blend", "Equity", asset_class="equity", geography_region="global", equity_size="small", equity_style="blend"),
+    _bucket_spec("equity_global_small_growth", "Global small growth", "Equity", asset_class="equity", geography_region="global", equity_size="small", equity_style="growth"),
+    _bucket_spec("equity_us_large_blend", "US large blend", "Equity", asset_class="equity", geography_region="us", equity_size="large", equity_style="blend"),
+    _bucket_spec("equity_us_large_value", "US large value", "Equity", asset_class="equity", geography_region="us", equity_size="large", equity_style="value"),
+    _bucket_spec("equity_us_large_growth", "US large growth", "Equity", asset_class="equity", geography_region="us", equity_size="large", equity_style="growth"),
+    _bucket_spec("equity_us_mid_blend", "US mid blend", "Equity", asset_class="equity", geography_region="us", equity_size="mid", equity_style="blend"),
+    _bucket_spec("equity_us_mid_value", "US mid value", "Equity", asset_class="equity", geography_region="us", equity_size="mid", equity_style="value"),
+    _bucket_spec("equity_us_mid_growth", "US mid growth", "Equity", asset_class="equity", geography_region="us", equity_size="mid", equity_style="growth"),
+    _bucket_spec("equity_us_small_blend", "US small blend", "Equity", asset_class="equity", geography_region="us", equity_size="small", equity_style="blend"),
+    _bucket_spec("equity_us_small_value", "US small value", "Equity", asset_class="equity", geography_region="us", equity_size="small", equity_style="value"),
+    _bucket_spec("equity_europe_large_blend", "Europe large blend", "Equity", asset_class="equity", geography_region="europe", equity_size="large", equity_style="blend"),
+    _bucket_spec("equity_europe_large_value", "Europe large value", "Equity", asset_class="equity", geography_region="europe", equity_size="large", equity_style="value"),
+    _bucket_spec("equity_europe_large_growth", "Europe large growth", "Equity", asset_class="equity", geography_region="europe", equity_size="large", equity_style="growth"),
+    _bucket_spec("equity_europe_mid_blend", "Europe mid blend", "Equity", asset_class="equity", geography_region="europe", equity_size="mid", equity_style="blend"),
+    _bucket_spec("equity_europe_mid_value", "Europe mid value", "Equity", asset_class="equity", geography_region="europe", equity_size="mid", equity_style="value"),
+    _bucket_spec("equity_europe_mid_growth", "Europe mid growth", "Equity", asset_class="equity", geography_region="europe", equity_size="mid", equity_style="growth"),
+    _bucket_spec("equity_asia_large_blend", "Asia large blend", "Equity", asset_class="equity", geography_region="asia", equity_size="large", equity_style="blend"),
+    _bucket_spec("equity_asia_large_value", "Asia large value", "Equity", asset_class="equity", geography_region="asia", equity_size="large", equity_style="value"),
+    _bucket_spec("equity_asia_large_growth", "Asia large growth", "Equity", asset_class="equity", geography_region="asia", equity_size="large", equity_style="growth"),
+    _bucket_spec("equity_em_large_blend", "Emerging markets large blend", "Equity", asset_class="equity", geography_region="em", equity_size="large", equity_style="blend"),
+    _bucket_spec("equity_em_large_value", "Emerging markets large value", "Equity", asset_class="equity", geography_region="em", equity_size="large", equity_style="value"),
+    _bucket_spec("equity_em_large_growth", "Emerging markets large growth", "Equity", asset_class="equity", geography_region="em", equity_size="large", equity_style="growth"),
+    _bucket_spec("equity_sector_technology", "Technology equity", "Equity", asset_class="equity", sector="technology"),
+    _bucket_spec("equity_sector_health_care", "Health care equity", "Equity", asset_class="equity", sector="health_care"),
+    _bucket_spec("equity_sector_financials", "Financials equity", "Equity", asset_class="equity", sector="financials"),
+    _bucket_spec("equity_sector_industrials", "Industrials equity", "Equity", asset_class="equity", sector="industrials"),
+    _bucket_spec("equity_sector_materials", "Materials equity", "Equity", asset_class="equity", sector="materials"),
+    _bucket_spec("equity_sector_real_estate", "Real estate equity", "Equity", asset_class="equity", sector="real_estate"),
+    _bucket_spec("equity_sector_consumer_cyclical", "Consumer cyclical equity", "Equity", asset_class="equity", sector="consumer_cyclical"),
+    _bucket_spec("equity_sector_consumer_defensive", "Consumer defensive equity", "Equity", asset_class="equity", sector="consumer_defensive"),
+    _bucket_spec("equity_sector_communication", "Communication services equity", "Equity", asset_class="equity", sector="communication"),
+    _bucket_spec("equity_sector_utilities", "Utilities equity", "Equity", asset_class="equity", sector="utilities"),
+    _bucket_spec("equity_sector_energy", "Energy equity", "Equity", asset_class="equity", sector="energy"),
+    _bucket_spec("government_bonds", "Government bonds", "Bond", asset_class="bond", govt_only=True),
+    _bucket_spec("corporate_bonds", "Corporate bonds", "Bond", asset_class="bond", bond_type="corp"),
+    _bucket_spec("aggregate_bonds", "Aggregate bonds", "Bond", asset_class="bond", bond_type="aggregate"),
+    _bucket_spec("inflation_linked_bonds", "Inflation-linked bonds", "Bond", asset_class="bond", bond_type="linkers"),
+    _bucket_spec("short_govt_bonds", "Short government bonds", "Bond", asset_class="bond", govt_only=True, duration_bucket="short"),
+    _bucket_spec("intermediate_govt_bonds", "Intermediate government bonds", "Bond", asset_class="bond", govt_only=True, duration_bucket="intermediate"),
+    _bucket_spec("long_govt_bonds", "Long government bonds", "Bond", asset_class="bond", govt_only=True, duration_bucket="long"),
+    _bucket_spec("short_bonds", "Short bonds", "Bond", asset_class="bond", duration_bucket="short"),
+    _bucket_spec("intermediate_bonds", "Intermediate bonds", "Bond", asset_class="bond", duration_bucket="intermediate"),
+    _bucket_spec("long_bonds", "Long bonds", "Bond", asset_class="bond", duration_bucket="long"),
+    _bucket_spec("cash", "Cash", "Cash", kind="cash", asset_class="cash"),
+    _bucket_spec("gold", "Gold", "Commodity", kind="gold", asset_class="commodity", commodity_type="gold"),
+    _bucket_spec("broad_commodities", "Broad commodities", "Commodity", asset_class="commodity", commodity_type="broad_commodities"),
+    _bucket_spec("energy_commodities", "Energy commodities", "Commodity", asset_class="commodity", commodity_type="energy"),
+    _bucket_spec("industrial_metals", "Industrial metals", "Commodity", asset_class="commodity", commodity_type="industrial_metals"),
+    _bucket_spec("silver", "Silver", "Commodity", asset_class="commodity", commodity_type="silver"),
+    _bucket_spec("multi_asset", "Multi-asset", "Multi-asset", asset_class="multi"),
+)
+
+BUCKET_SPEC_BY_NAME = {spec.bucket_name: spec for spec in BUCKET_SPECS}
+BUCKET_OPTIONS = tuple(
+    {
+        "bucket_name": spec.bucket_name,
+        "label": spec.label,
+        "picker_label": f"{spec.category}: {spec.label}",
+        "category": spec.category,
+    }
+    for spec in BUCKET_SPECS
+)
+
+
+@dataclass(frozen=True)
 class AttemptConfig:
     step: str
     venue_scope: str = "selected"
@@ -509,6 +617,17 @@ def name_implies_leverage_inverse(name: str) -> bool:
     return any(re.search(pattern, upper) for pattern in patterns)
 
 
+def get_bucket_spec(bucket_name: str) -> BucketSpec:
+    spec = BUCKET_SPEC_BY_NAME.get(bucket_name)
+    if spec is None:
+        raise KeyError(f"Unknown bucket_name: {bucket_name}")
+    return spec
+
+
+def is_commodity_bucket(bucket_name: str) -> bool:
+    return get_bucket_spec(bucket_name).asset_class == "commodity"
+
+
 def filter_rows_by_venues(rows: list[dict[str, object]], venues: list[str]) -> list[dict[str, object]]:
     allowed = set(venues)
     return [dict(row) for row in rows if str(row.get("primary_venue") or "") in allowed]
@@ -533,14 +652,14 @@ def apply_hard_filters(
     }
     kept: list[dict[str, object]] = []
     considered = len(base_rows)
-    is_gold_bucket = bucket_name == "gold"
+    commodity_bucket = is_commodity_bucket(bucket_name)
 
     for row in base_rows:
         reasons: list[str] = []
         instrument_type = normalize_text(row["instrument_type"])
         name_text = str(row["instrument_name"] or "")
 
-        if is_gold_bucket:
+        if commodity_bucket:
             instrument_type_ok = instrument_type in {"ETF", "ETC"}
         else:
             instrument_type_ok = instrument_type == "ETF"
@@ -553,11 +672,11 @@ def apply_hard_filters(
         if int(row["inverse_flag"] or 0) != 0:
             excluded["inverse_flag"] += 1
             reasons.append("inverse_flag")
-        if (not is_gold_bucket) and str(row["isin"] or "").upper().startswith("XS"):
+        if (not commodity_bucket) and str(row["isin"] or "").upper().startswith("XS"):
             excluded["xs_isin"] += 1
             reasons.append("isin_xs")
         has_etp_etn_note = has_name_exclusion(name_text)
-        if is_gold_bucket:
+        if commodity_bucket:
             if has_etp_etn_note and name_implies_leverage_inverse(name_text):
                 excluded["name_etp_etn_note"] += 1
                 reasons.append("name_etp_etn_note_leverage_implied")
@@ -593,6 +712,8 @@ def is_core_global_equity(row: dict[str, object], *, allow_factor: bool) -> tupl
     asset_class = str(row.get("asset_class") or "unknown").lower()
     geography_region = str(row.get("geography_region") or "unknown").lower()
     geography_scope = str(row.get("geography_scope") or "unknown").lower()
+    equity_size = str(row.get("equity_size") or "").lower()
+    equity_style = str(row.get("equity_style") or "").lower()
     if asset_class != "equity":
         return False, []
     if geography_region != "global" or geography_scope != "global":
@@ -604,7 +725,11 @@ def is_core_global_equity(row: dict[str, object], *, allow_factor: bool) -> tupl
     reasons = ["asset_class=equity", "geography_region=global", "core_scope=global"]
     if allow_factor:
         return True, reasons
-    if row.get("factor") or row.get("equity_size") or row.get("equity_style"):
+    if row.get("factor"):
+        return False, []
+    if equity_size and equity_size != "large":
+        return False, []
+    if equity_style and equity_style != "blend":
         return False, []
     if has_non_core_global_modifier(str(row.get("instrument_name") or "")):
         return False, []
@@ -642,50 +767,111 @@ def is_govt_bond(row: dict[str, object]) -> bool:
     return int(row.get("govt_bond_flag") or 0) == 1 or str(row.get("bond_type") or "").lower() == "govt"
 
 
+def is_plain_vanilla_equity(row: dict[str, object]) -> bool:
+    if row.get("sector") or row.get("theme"):
+        return False
+    name_text = str(row.get("instrument_name") or "")
+    if has_thematic_name(name_text):
+        return False
+    if has_non_core_global_modifier(name_text):
+        return False
+    return True
+
+
+def match_generic_bucket(spec: BucketSpec, row: dict[str, object]) -> tuple[bool, list[str]]:
+    asset_class = str(row.get("asset_class") or "unknown").lower()
+    reasons: list[str] = []
+    if spec.asset_class and asset_class != spec.asset_class:
+        return False, []
+
+    if spec.asset_class == "equity":
+        if spec.sector:
+            if str(row.get("sector") or "").lower() != spec.sector:
+                return False, []
+            return True, ["asset_class=equity", f"sector={spec.sector}"]
+
+        if not is_plain_vanilla_equity(row):
+            return False, []
+        if spec.geography_region and str(row.get("geography_region") or "unknown").lower() != spec.geography_region:
+            return False, []
+        equity_size = str(row.get("equity_size") or "").lower()
+        equity_style = str(row.get("equity_style") or "").lower()
+        if spec.equity_size and equity_size != spec.equity_size:
+            return False, []
+        if spec.equity_style and equity_style != spec.equity_style:
+            return False, []
+        if not spec.equity_size and equity_size and equity_size != "large":
+            return False, []
+        if not spec.equity_style and equity_style and equity_style != "blend":
+            return False, []
+        if row.get("factor"):
+            return False, []
+        reasons.append("asset_class=equity")
+        if spec.geography_region:
+            reasons.append(f"geography_region={spec.geography_region}")
+        if spec.equity_size:
+            reasons.append(f"equity_size={spec.equity_size}")
+        if spec.equity_style:
+            reasons.append(f"equity_style={spec.equity_style}")
+        return True, reasons
+
+    if spec.asset_class == "bond":
+        if spec.govt_only and not is_govt_bond(row):
+            return False, []
+        if spec.bond_type and str(row.get("bond_type") or "unknown").lower() != spec.bond_type:
+            return False, []
+        if spec.duration_bucket and str(row.get("duration_bucket") or "unknown").lower() != spec.duration_bucket:
+            return False, []
+        reasons.append("asset_class=bond")
+        if spec.govt_only:
+            reasons.append("bond_type=govt")
+        elif spec.bond_type:
+            reasons.append(f"bond_type={spec.bond_type}")
+        if spec.duration_bucket:
+            reasons.append(f"duration={spec.duration_bucket}")
+        return True, reasons
+
+    if spec.asset_class == "commodity":
+        if spec.commodity_type and str(row.get("commodity_type") or "unknown").lower() != spec.commodity_type:
+            return False, []
+        if has_gold_equity_proxy_name(str(row.get("instrument_name") or "")):
+            return False, []
+        reasons.append("asset_class=commodity")
+        if spec.commodity_type:
+            reasons.append(f"commodity_type={spec.commodity_type}")
+        return True, reasons
+
+    if spec.asset_class == "multi":
+        return True, ["asset_class=multi"]
+
+    return False, []
+
+
 def match_bucket(bucket_name: str, row: dict[str, object], *, match_mode: str = "strict") -> tuple[bool, list[str]]:
     asset_class = str(row.get("asset_class") or "unknown").lower()
     duration_bucket = str(row.get("duration_bucket") or "unknown").lower()
     commodity_type = str(row.get("commodity_type") or "unknown").lower()
+    spec = get_bucket_spec(bucket_name)
 
-    if bucket_name == "equity_global":
+    if spec.kind == "core_global":
         return is_core_global_equity(row, allow_factor=match_mode == "allow_factor")
 
-    if bucket_name == "equity_small_cap_value":
+    if spec.kind == "small_cap_value":
         return is_small_cap_value_candidate(row, proxy_only=match_mode == "proxy")
 
-    if bucket_name == "long_govt_bonds":
-        if asset_class == "bond" and is_govt_bond(row) and duration_bucket == "long":
-            return True, ["asset_class=bond", "bond_type=govt", "duration=long"]
-        return False, []
-
-    if bucket_name == "intermediate_govt_bonds":
-        if asset_class == "bond" and is_govt_bond(row) and duration_bucket == "intermediate":
-            return True, ["asset_class=bond", "bond_type=govt", "duration=intermediate"]
-        return False, []
-
-    if bucket_name == "long_bonds":
-        if asset_class == "bond" and duration_bucket == "long":
-            return True, ["asset_class=bond", "duration=long"]
-        return False, []
-
-    if bucket_name == "short_bonds":
-        if asset_class == "bond" and duration_bucket == "short":
-            return True, ["asset_class=bond", "duration=short"]
-        return False, []
-
-    if bucket_name == "cash":
+    if spec.kind == "cash":
         if asset_class == "cash" or int(row.get("cash_flag") or 0) == 1 or int(row.get("cash_proxy_flag") or 0) == 1:
             return True, ["asset_class=cash_or_proxy"]
         if match_mode == "bond_proxy" and asset_class == "bond" and duration_bucket == "short" and is_govt_bond(row):
             return True, ["short_govt_bond_proxy"]
         return False, []
 
-    if bucket_name == "gold":
+    if spec.kind == "gold":
         if asset_class == "commodity" and commodity_type == "gold" and not has_gold_equity_proxy_name(str(row.get("instrument_name") or "")):
             return True, ["asset_class=commodity", "commodity_type=gold"]
         return False, []
 
-    return False, []
+    return match_generic_bucket(spec, row)
 
 
 def venue_rank(venue: str | None) -> int:
@@ -704,7 +890,8 @@ def currency_rank(currency: str | None, order: list[str]) -> int:
 
 
 def bucket_preference(bucket_name: str, row: dict[str, object]) -> int:
-    if bucket_name == "equity_global":
+    spec = get_bucket_spec(bucket_name)
+    if spec.kind == "core_global":
         preference = 0
         if has_non_core_global_modifier(str(row.get("instrument_name") or "")):
             preference += 20
@@ -715,11 +902,48 @@ def bucket_preference(bucket_name: str, row: dict[str, object]) -> int:
         if row.get("equity_style"):
             preference += 5
         return preference
-    if bucket_name == "equity_small_cap_value":
+    if spec.kind == "small_cap_value":
         return 0 if str(row.get("equity_style") or "").lower() == "value" else 20
-    if bucket_name == "cash":
+    if spec.kind == "cash":
         return 0 if str(row.get("asset_class") or "").lower() == "cash" else 10
+    if spec.asset_class == "equity":
+        preference = 0
+        if row.get("factor"):
+            preference += 15
+        if spec.sector is None:
+            if has_non_core_global_modifier(str(row.get("instrument_name") or "")):
+                preference += 20
+            if not spec.equity_size and str(row.get("equity_size") or "").lower() not in {"", "large"}:
+                preference += 8
+            if not spec.equity_style and str(row.get("equity_style") or "").lower() not in {"", "blend"}:
+                preference += 8
+        return preference
     return 0
+
+
+def get_bucket_attempts(bucket_name: str) -> tuple[AttemptConfig, ...]:
+    if bucket_name in BUCKET_ATTEMPTS:
+        return BUCKET_ATTEMPTS[bucket_name]
+    spec = get_bucket_spec(bucket_name)
+    if spec.asset_class == "commodity":
+        return (
+            AttemptConfig("strict"),
+            AttemptConfig("fallback_venue_expand", venue_scope="all"),
+            AttemptConfig("fallback_allow_missing_fees", venue_scope="all", allow_missing_fees=True),
+        )
+    if spec.asset_class in {"bond", "multi"}:
+        return (
+            AttemptConfig("strict"),
+            AttemptConfig("fallback_venue_expand", venue_scope="all"),
+            AttemptConfig("fallback_allow_missing_fees", venue_scope="all", allow_missing_fees=True),
+        )
+    if spec.asset_class == "equity":
+        return (
+            AttemptConfig("strict"),
+            AttemptConfig("fallback_venue_expand", venue_scope="all"),
+            AttemptConfig("fallback_allow_missing_fees", venue_scope="all", allow_missing_fees=True),
+        )
+    raise KeyError(f"No attempts configured for bucket {bucket_name}")
 
 
 def rank_key(row: dict[str, object], currency_order: list[str], bucket_name: str) -> tuple[object, ...]:
@@ -1080,7 +1304,7 @@ def pick_bucket_rows_with_fallbacks(
     best_attempt: Optional[dict[str, object]] = None
     seen_signatures: set[tuple[tuple[str, ...], bool, str]] = set()
 
-    for attempt in BUCKET_ATTEMPTS[bucket_name]:
+    for attempt in get_bucket_attempts(bucket_name):
         if attempt.allow_missing_fees and not allow_missing_fees_flag:
             continue
         venues = tuple(effective_venues(selected_venues, attempt.venue_scope))

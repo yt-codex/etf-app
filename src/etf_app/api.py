@@ -16,6 +16,7 @@ from etf_app.profile import (
     refresh_product_profile,
 )
 from etf_app.recommend import (
+    BUCKET_OPTIONS,
     STRATEGIES,
     build_strategy_rows,
     filter_rows_by_venues,
@@ -30,6 +31,7 @@ from etf_app.taxonomy import ensure_taxonomy_schema, load_universe_rows, upsert_
 
 MAX_PAGE_SIZE = 250
 DEFAULT_PAGE_SIZE = 50
+MAX_CUSTOM_BUCKETS = 10
 
 FUNDS_FROM_SQL = """
 FROM instrument i
@@ -430,6 +432,63 @@ def list_filter_options(conn: sqlite3.Connection) -> dict[str, object]:
     }
 
 
+def _serialize_strategy_result(
+    strategy: dict[str, object],
+    *,
+    rows: list[dict[str, object]],
+    emitted: dict[str, int],
+    diagnostics: dict[str, dict[str, object]],
+    gold_policy,
+) -> dict[str, object]:
+    serialized_rows: list[dict[str, object]] = []
+    for row in rows:
+        serialized = dict(row)
+        selection_reason = serialized.get("selection_reason")
+        if selection_reason:
+            serialized["selection_reason"] = json.loads(str(selection_reason))
+        serialized_rows.append(serialized)
+
+    strategy_diagnostics: dict[str, object] = {}
+    for bucket_name, diag in diagnostics.items():
+        attempts = [
+            {
+                "step": str(attempt["step"]),
+                "venues": [str(venue_name) for venue_name in attempt["venues"]],
+                "allow_missing_fees": bool(attempt["allow_missing_fees"]),
+                "match_mode": str(attempt["match_mode"]),
+                "considered": int(attempt["considered"]),
+                "hard_kept": int(attempt["hard_kept"]),
+                "bucket_matches": int(attempt["bucket_matches"]),
+                "final_selected": int(attempt["final_selected"]),
+            }
+            for attempt in diag["attempts"]
+        ]
+        bucket_diag: dict[str, object] = {
+            "final_step": str(diag["final_step"]),
+            "final_selected": int(diag["final_selected"]),
+            "final_hard_kept": int(diag["final_hard_kept"]),
+            "final_bucket_matches": int(diag["final_bucket_matches"]),
+            "attempts": attempts,
+        }
+        if bucket_name == "gold":
+            bucket_diag["gold_policy"] = asdict(gold_policy)
+        strategy_diagnostics[bucket_name] = bucket_diag
+
+    return {
+        "slug": str(strategy.get("slug") or ""),
+        "name": str(strategy["name"]),
+        "description": str(strategy["description"]),
+        "detail": str(strategy.get("detail") or ""),
+        "implementation_note": str(strategy.get("implementation_note") or ""),
+        "source_url": str(strategy.get("source_url") or ""),
+        "filename": str(strategy.get("filename") or ""),
+        "buckets": [{"bucket_name": bucket_name, "target_weight": float(weight)} for bucket_name, weight in strategy["buckets"]],
+        "emitted": {key: int(value) for key, value in emitted.items()},
+        "diagnostics": strategy_diagnostics,
+        "rows": serialized_rows,
+    }
+
+
 def get_strategy_snapshot(
     conn: sqlite3.Connection,
     *,
@@ -464,52 +523,14 @@ def get_strategy_snapshot(
             gold_policy=gold_policy,
             gold_exception_rows=gold_exception_rows,
         )
-        serialized_rows: list[dict[str, object]] = []
-        for row in rows:
-            serialized = dict(row)
-            selection_reason = serialized.get("selection_reason")
-            if selection_reason:
-                serialized["selection_reason"] = json.loads(str(selection_reason))
-            serialized_rows.append(serialized)
-        strategy_diagnostics: dict[str, object] = {}
-        for bucket_name, diag in diagnostics.items():
-            attempts = [
-                {
-                    "step": str(attempt["step"]),
-                    "venues": [str(venue_name) for venue_name in attempt["venues"]],
-                    "allow_missing_fees": bool(attempt["allow_missing_fees"]),
-                    "match_mode": str(attempt["match_mode"]),
-                    "considered": int(attempt["considered"]),
-                    "hard_kept": int(attempt["hard_kept"]),
-                    "bucket_matches": int(attempt["bucket_matches"]),
-                    "final_selected": int(attempt["final_selected"]),
-                }
-                for attempt in diag["attempts"]
-            ]
-            bucket_diag: dict[str, object] = {
-                "final_step": str(diag["final_step"]),
-                "final_selected": int(diag["final_selected"]),
-                "final_hard_kept": int(diag["final_hard_kept"]),
-                "final_bucket_matches": int(diag["final_bucket_matches"]),
-                "attempts": attempts,
-            }
-            if bucket_name == "gold":
-                bucket_diag["gold_policy"] = asdict(gold_policy)
-            strategy_diagnostics[bucket_name] = bucket_diag
         strategies.append(
-            {
-                "slug": str(strategy.get("slug") or ""),
-                "name": str(strategy["name"]),
-                "description": str(strategy["description"]),
-                "detail": str(strategy.get("detail") or ""),
-                "implementation_note": str(strategy.get("implementation_note") or ""),
-                "source_url": str(strategy.get("source_url") or ""),
-                "filename": str(strategy["filename"]),
-                "buckets": [{"bucket_name": bucket_name, "target_weight": float(weight)} for bucket_name, weight in strategy["buckets"]],
-                "emitted": {key: int(value) for key, value in emitted.items()},
-                "diagnostics": strategy_diagnostics,
-                "rows": serialized_rows,
-            }
+            _serialize_strategy_result(
+                strategy,
+                rows=rows,
+                emitted=emitted,
+                diagnostics=diagnostics,
+                gold_policy=gold_policy,
+            )
         )
     return {
         "selected_venues": selected_venues,
@@ -519,6 +540,80 @@ def get_strategy_snapshot(
         "allow_missing_currency": allow_missing_currency,
         "gold_policy": asdict(gold_policy),
         "strategies": strategies,
+    }
+
+
+def get_custom_strategy_snapshot(
+    conn: sqlite3.Connection,
+    *,
+    venue: str,
+    preferred_currency_order: str,
+    top_n: int,
+    allow_missing_fees: bool,
+    allow_missing_currency: bool,
+    buckets: list[dict[str, object]],
+) -> dict[str, object]:
+    if not buckets:
+        raise ValueError("at least one bucket is required")
+    if len(buckets) > MAX_CUSTOM_BUCKETS:
+        raise ValueError(f"custom bucket count exceeds {MAX_CUSTOM_BUCKETS}")
+
+    valid_bucket_names = {str(item["bucket_name"]) for item in BUCKET_OPTIONS}
+    normalized_buckets: list[tuple[str, float]] = []
+    for bucket in buckets:
+        bucket_name = str(bucket.get("bucket_name") or "").strip()
+        if bucket_name not in valid_bucket_names:
+            raise ValueError(f"unknown bucket_name: {bucket_name}")
+        try:
+            target_weight = float(bucket.get("target_weight") or 0.0)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"invalid target_weight for {bucket_name}") from exc
+        if target_weight < 0:
+            raise ValueError(f"negative target_weight for {bucket_name}")
+        normalized_buckets.append((bucket_name, target_weight))
+
+    currency_order = parse_currency_order(preferred_currency_order)
+    selected_venues = venue_scope(venue)
+    base_rows = load_base_candidates(conn)
+    gold_policy = inspect_gold_policy(conn, base_rows=base_rows, selected_venues=selected_venues)
+    gold_exception_rows = load_gold_exception_candidates(conn, selected_venues)
+    strategy = {
+        "slug": "custom_allocation",
+        "name": "Custom allocation",
+        "description": "A user-defined allocation built from the bucket mix entered in the app.",
+        "detail": "Each row uses the same shortlist and ranking rules as the named strategies tab, but the sleeves come directly from your selected buckets.",
+        "implementation_note": "Adjust the ticker inside each row to inspect alternatives while keeping the same bucket definition and target weight.",
+        "source_url": "",
+        "filename": "",
+        "buckets": tuple(normalized_buckets),
+    }
+    rows, emitted, diagnostics = build_strategy_rows(
+        strategy,
+        base_rows,
+        selected_venues=selected_venues,
+        top_n=top_n,
+        currency_order=currency_order,
+        allow_missing_fees=allow_missing_fees,
+        allow_missing_currency=allow_missing_currency,
+        gold_policy=gold_policy,
+        gold_exception_rows=gold_exception_rows,
+    )
+    return {
+        "selected_venues": selected_venues,
+        "top_n": top_n,
+        "preferred_currency_order": currency_order,
+        "allow_missing_fees": allow_missing_fees,
+        "allow_missing_currency": allow_missing_currency,
+        "gold_policy": asdict(gold_policy),
+        "strategies": [
+            _serialize_strategy_result(
+                strategy,
+                rows=rows,
+                emitted=emitted,
+                diagnostics=diagnostics,
+                gold_policy=gold_policy,
+            )
+        ],
     }
 
 

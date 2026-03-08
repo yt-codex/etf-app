@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 
-from etf_app.recommend import STRATEGIES, build_strategy_rows, match_bucket, summarize_gold_policy
+from etf_app.recommend import BUCKET_OPTIONS, STRATEGIES, build_strategy_rows, match_bucket, summarize_gold_policy
 from etf_app.taxonomy import classify_instrument
 
 
@@ -104,6 +104,40 @@ def test_gold_bucket_accepts_physical_gold_commodity() -> None:
     assert reasons == ["asset_class=commodity", "commodity_type=gold"]
 
 
+def test_generic_equity_bucket_matches_plain_vanilla_us_large_value() -> None:
+    ok, reasons = match_bucket(
+        "equity_us_large_value",
+        make_row(
+            geography_scope="country",
+            geography_region="us",
+            equity_size="large",
+            equity_style="value",
+        ),
+    )
+
+    assert ok is True
+    assert reasons == [
+        "asset_class=equity",
+        "geography_region=us",
+        "equity_size=large",
+        "equity_style=value",
+    ]
+
+
+def test_generic_commodity_bucket_allows_broad_commodities() -> None:
+    ok, reasons = match_bucket(
+        "broad_commodities",
+        make_row(
+            instrument_type="ETC",
+            asset_class="commodity",
+            commodity_type="broad_commodities",
+        ),
+    )
+
+    assert ok is True
+    assert reasons == ["asset_class=commodity", "commodity_type=broad_commodities"]
+
+
 def test_gold_policy_summary_explains_disclosed_exception_gap() -> None:
     summary = summarize_gold_policy(
         eligible_ucits_gold_count=0,
@@ -165,3 +199,4 @@ def test_strategy_catalog_is_expanded_and_unique() -> None:
     filenames = [str(strategy["filename"]) for strategy in STRATEGIES]
     assert len(names) == len(set(names))
     assert len(filenames) == len(set(filenames))
+    assert len(BUCKET_OPTIONS) >= 20

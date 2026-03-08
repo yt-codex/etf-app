@@ -4,7 +4,7 @@ import io
 import json
 import sqlite3
 
-from etf_app.api import create_app, get_fund_detail, list_filter_options, list_funds
+from etf_app.api import create_app, get_custom_strategy_snapshot, get_fund_detail, list_filter_options, list_funds
 from etf_app.profile import ensure_instrument_cost_current_view, ensure_product_profile_schema
 from etf_app.taxonomy import ensure_taxonomy_schema
 
@@ -203,6 +203,32 @@ def test_get_fund_detail_includes_taxonomy_evidence(tmp_path) -> None:
     assert payload["fund_size_value"] == 1500000000.0
     assert payload["fund_size_currency"] == "USD"
     assert payload["taxonomy_evidence"]["rules"] == ["profile:benchmark_name", "hedged:GBP"]
+
+
+def test_get_custom_strategy_snapshot_builds_user_defined_mix(tmp_path) -> None:
+    db_path = make_api_db(tmp_path)
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+
+    payload = get_custom_strategy_snapshot(
+        conn,
+        venue="ALL",
+        preferred_currency_order="USD,EUR,GBP",
+        top_n=1,
+        allow_missing_fees=False,
+        allow_missing_currency=False,
+        buckets=[
+            {"bucket_name": "equity_global", "target_weight": 60.0},
+            {"bucket_name": "short_bonds", "target_weight": 40.0},
+        ],
+    )
+
+    assert [strategy["name"] for strategy in payload["strategies"]] == ["Custom allocation"]
+    assert payload["strategies"][0]["rows"]
+    assert payload["strategies"][0]["buckets"] == [
+        {"bucket_name": "equity_global", "target_weight": 60.0},
+        {"bucket_name": "short_bonds", "target_weight": 40.0},
+    ]
 
 
 def test_api_endpoints_expose_filters_completeness_and_strategies(tmp_path) -> None:
