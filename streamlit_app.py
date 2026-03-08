@@ -5,10 +5,10 @@ import math
 import os
 from pathlib import Path
 from typing import Optional
-from urllib.parse import urlencode
 
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components
 
 from etf_app.api import (
     get_completeness_snapshot,
@@ -169,34 +169,6 @@ st.markdown(
         white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
-    }
-    .table-header-sort {
-        display: inline-flex;
-        align-items: center;
-        gap: 0.4rem;
-    }
-    .table-sort-link {
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        width: 1.15rem;
-        height: 1.15rem;
-        border-radius: 999px;
-        color: #7a8883;
-        text-decoration: none;
-        border: 1px solid transparent;
-        font-size: 0.82rem;
-        line-height: 1;
-    }
-    .table-sort-link:hover {
-        color: var(--moss);
-        border-color: rgba(33,69,63,0.18);
-        background: rgba(33,69,63,0.08);
-    }
-    .table-sort-link.active {
-        color: #fff;
-        background: var(--moss);
-        border-color: var(--moss);
     }
     .detail-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.7rem; margin-top: 0.95rem; }
     .detail-tile { background: rgba(246,241,232,0.86); border: 1px solid var(--line); border-radius: 16px; padding: 0.72rem 0.82rem; }
@@ -559,41 +531,6 @@ def _selectbox_label(value: str, *, placeholder: str, field: str) -> str:
     if value == placeholder:
         return value
     return _format_filter_value(field, value)
-
-
-def _current_query_params() -> dict[str, str]:
-    try:
-        raw_params = st.query_params
-    except Exception:
-        return {}
-    params: dict[str, str] = {}
-    for key, value in raw_params.items():
-        if isinstance(value, list):
-            if value:
-                params[str(key)] = str(value[-1])
-            continue
-        text = _normalized_text(value)
-        if text is not None:
-            params[str(key)] = text
-    return params
-
-
-def _query_href(**updates: Optional[str]) -> str:
-    params = _current_query_params()
-    for key, value in updates.items():
-        if value in (None, "", "none"):
-            params.pop(key, None)
-        else:
-            params[str(key)] = str(value)
-    query_string = urlencode(params)
-    return f"?{query_string}" if query_string else "?"
-
-
-def _ter_sort_query_direction() -> Optional[str]:
-    direction = _token_key(_current_query_params().get("ter_sort"))
-    if direction in {"asc", "desc"}:
-        return direction
-    return None
 
 
 def _region_label(item: dict[str, object]) -> str:
@@ -1021,34 +958,193 @@ def _render_static_table(df: pd.DataFrame, *, table_class: str, height: int) -> 
     )
 
 
-def _render_explorer_table(df: pd.DataFrame, *, height: int, ter_sort_direction: Optional[str]) -> None:
+def _render_explorer_table(df: pd.DataFrame, *, height: int) -> None:
     if df.empty:
         return
-    asc_href = _query_href(ter_sort=None if ter_sort_direction == "asc" else "asc")
-    desc_href = _query_href(ter_sort=None if ter_sort_direction == "desc" else "desc")
+    rows_html: list[str] = []
+    for row_index, row in enumerate(df.to_dict(orient="records")):
+        ter_text = str(row.get("TER") or "").strip()
+        ter_value = ""
+        if ter_text:
+            try:
+                ter_value = str(float(ter_text.rstrip("%")))
+            except ValueError:
+                ter_value = ""
+        cells: list[str] = []
+        for column in df.columns:
+            cell_value = _escape(row.get(column, ""))
+            cells.append(f"<td>{cell_value}</td>")
+        rows_html.append(
+            f"<tr data-row-index='{row_index}' data-ter-value='{_escape(ter_value)}'>{''.join(cells)}</tr>"
+        )
+    table_id = "explorer-fund-table"
     head_cells: list[str] = []
     for column in df.columns:
         if column == "TER":
             head_cells.append(
-                "<th><div class='table-header-sort'>"
+                "<th>"
+                "<button type='button' class='ter-sort-button' data-sort-direction='none' title='Sort displayed rows by TER'>"
                 "<span>TER</span>"
-                f"<a class='table-sort-link{' active' if ter_sort_direction == 'asc' else ''}' href='{_escape(asc_href)}' target='_self'>&uarr;</a>"
-                f"<a class='table-sort-link{' active' if ter_sort_direction == 'desc' else ''}' href='{_escape(desc_href)}' target='_self'>&darr;</a>"
-                "</div></th>"
+                "<span class='ter-sort-icon' aria-hidden='true'><span class='up'>&uarr;</span><span class='down'>&darr;</span></span>"
+                "</button>"
+                "</th>"
             )
         else:
             head_cells.append(f"<th>{_escape(column)}</th>")
-    body_rows: list[str] = []
-    for row in df.itertuples(index=False, name=None):
-        cells = "".join(f"<td>{_escape(value)}</td>" for value in row)
-        body_rows.append(f"<tr>{cells}</tr>")
-    table_html = (
-        f"<table class='browser-table'><thead><tr>{''.join(head_cells)}</tr></thead>"
-        f"<tbody>{''.join(body_rows)}</tbody></table>"
-    )
-    st.markdown(
-        f"<div class='table-shell'><div class='table-scroll' style='max-height:{height}px'>{table_html}</div></div>",
-        unsafe_allow_html=True,
+    table_html = f"""
+    <!doctype html>
+    <html>
+    <head>
+      <meta charset="utf-8" />
+      <style>
+        :root {{
+          --paper: #f6f1e8;
+          --panel: rgba(255,255,255,0.88);
+          --ink: #15231f;
+          --muted: #67746f;
+          --line: rgba(21,35,31,0.10);
+          --moss: #21453f;
+        }}
+        html, body {{
+          margin: 0;
+          padding: 0;
+          background: transparent;
+          color: var(--ink);
+          font-family: 'IBM Plex Sans', sans-serif;
+        }}
+        .table-shell {{
+          overflow: hidden;
+          background: var(--panel);
+          border: 1px solid var(--line);
+          border-radius: 24px;
+          box-shadow: 0 14px 40px rgba(21,35,31,0.06);
+        }}
+        .table-scroll {{
+          overflow: auto;
+          max-height: {height}px;
+        }}
+        .browser-table {{
+          width: 100%;
+          min-width: 1600px;
+          border-collapse: collapse;
+          border-spacing: 0;
+        }}
+        .browser-table thead th {{
+          position: sticky;
+          top: 0;
+          z-index: 2;
+          background: #eef2ec;
+          border-bottom: 1px solid var(--line);
+          color: var(--muted);
+          font-size: 0.72rem;
+          letter-spacing: 0.1em;
+          text-transform: uppercase;
+          text-align: left;
+          padding: 0.82rem 0.78rem;
+          white-space: nowrap;
+        }}
+        .browser-table tbody td {{
+          padding: 0.78rem;
+          border-bottom: 1px solid rgba(21,35,31,0.08);
+          font-size: 0.91rem;
+          color: var(--ink);
+          background: rgba(255,255,255,0.5);
+          vertical-align: top;
+        }}
+        .browser-table tbody tr:nth-child(even) td {{
+          background: rgba(244,239,231,0.78);
+        }}
+        .browser-table tbody tr:hover td {{
+          background: rgba(33,69,63,0.08);
+        }}
+        .ter-sort-button {{
+          display: inline-flex;
+          align-items: center;
+          gap: 0.42rem;
+          border: 0;
+          background: transparent;
+          padding: 0;
+          margin: 0;
+          color: inherit;
+          font: inherit;
+          cursor: pointer;
+        }}
+        .ter-sort-icon {{
+          display: inline-flex;
+          flex-direction: column;
+          align-items: center;
+          justify-content: center;
+          line-height: 0.72;
+          font-size: 0.62rem;
+          color: #90a09a;
+          margin-top: -0.02rem;
+        }}
+        .ter-sort-icon .up,
+        .ter-sort-icon .down {{
+          display: block;
+        }}
+        .ter-sort-button[data-sort-direction="asc"] .ter-sort-icon .up,
+        .ter-sort-button[data-sort-direction="desc"] .ter-sort-icon .down {{
+          color: var(--moss);
+        }}
+        .ter-sort-button:hover .ter-sort-icon .up,
+        .ter-sort-button:hover .ter-sort-icon .down {{
+          color: var(--moss);
+        }}
+      </style>
+    </head>
+    <body>
+      <div class="table-shell">
+        <div class="table-scroll">
+          <table id="{table_id}" class="browser-table">
+            <thead><tr>{''.join(head_cells)}</tr></thead>
+            <tbody>{''.join(rows_html)}</tbody>
+          </table>
+        </div>
+      </div>
+      <script>
+        (function() {{
+          const table = document.getElementById("{table_id}");
+          if (!table) return;
+          const button = table.querySelector(".ter-sort-button");
+          const tbody = table.querySelector("tbody");
+          if (!button || !tbody) return;
+
+          const getTerValue = (row) => {{
+            const raw = row.getAttribute("data-ter-value") || "";
+            if (!raw) return Number.POSITIVE_INFINITY;
+            const parsed = Number.parseFloat(raw);
+            return Number.isFinite(parsed) ? parsed : Number.POSITIVE_INFINITY;
+          }};
+
+          const getRowIndex = (row) => Number.parseInt(row.getAttribute("data-row-index") || "0", 10);
+
+          button.addEventListener("click", function() {{
+            const current = button.getAttribute("data-sort-direction");
+            const next = current === "asc" ? "desc" : "asc";
+            button.setAttribute("data-sort-direction", next);
+
+            const rows = Array.from(tbody.querySelectorAll("tr"));
+            rows.sort((left, right) => {{
+              const leftValue = getTerValue(left);
+              const rightValue = getTerValue(right);
+              if (leftValue === rightValue) {{
+                return getRowIndex(left) - getRowIndex(right);
+              }}
+              return next === "asc" ? leftValue - rightValue : rightValue - leftValue;
+            }});
+
+            rows.forEach((row) => tbody.appendChild(row));
+          }});
+        }})();
+      </script>
+    </body>
+    </html>
+    """
+    components.html(
+        table_html,
+        height=height + 32,
+        scrolling=False,
     )
 
 
@@ -1186,13 +1282,10 @@ else:
     )
 
 if active_view == "Explorer":
-    ter_sort_direction = _ter_sort_query_direction()
-    st.session_state["browse_ter_sort_direction"] = ter_sort_direction
-
     fund_params = {
         "limit": str(page_size),
-        "sort": "fee" if ter_sort_direction else "name",
-        "direction": str(ter_sort_direction or "asc"),
+        "sort": "name",
+        "direction": "asc",
     }
     if search:
         fund_params["q"] = search
@@ -1305,7 +1398,7 @@ if active_view == "Explorer":
     if fund_table.empty:
         st.info("No funds matched the current filters.")
     else:
-        _render_explorer_table(fund_table, height=620, ter_sort_direction=ter_sort_direction)
+        _render_explorer_table(fund_table, height=620)
 
 elif active_view == "Strategies":
     strategy_catalog = {str(strategy["name"]): strategy for strategy in STRATEGIES}
