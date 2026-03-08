@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gzip
 import hashlib
 import json
 from pathlib import Path
@@ -116,6 +117,47 @@ def test_resolve_db_path_reuses_cached_remote_db_when_metadata_matches(
     assert call_count == 1
 
 
+def test_resolve_db_path_downloads_and_decompresses_gzip_remote_db(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    raw_payload = b"decompressed-db-contents"
+    compressed_payload = gzip.compress(raw_payload)
+    expected_sha = hashlib.sha256(raw_payload).hexdigest()
+    calls: list[str] = []
+
+    def _fake_get(url: str, **kwargs) -> _FakeResponse:
+        calls.append(url)
+        return _FakeResponse(compressed_payload)
+
+    monkeypatch.setattr("etf_app.db_bootstrap.requests.get", _fake_get)
+
+    resolved = resolve_db_path(
+        default_path="missing-stage1_etf.db",
+        secrets={
+            "db_url": "https://example.com/releases/deploy_stage1_etf.db.gz",
+            "db_version": "2026-03-09",
+            "db_sha256": expected_sha,
+        },
+        env={},
+        cache_root=tmp_path / "cache",
+    )
+
+    assert calls == ["https://example.com/releases/deploy_stage1_etf.db.gz"]
+    assert resolved.name == "deploy_stage1_etf.db"
+    assert resolved.read_bytes() == raw_payload
+
+    metadata_path = Path(f"{resolved}.meta.json")
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    assert metadata == {
+        "compression": "gzip",
+        "sha256": expected_sha,
+        "source_key": "https://example.com/releases/deploy_stage1_etf.db.gz",
+        "url": "https://example.com/releases/deploy_stage1_etf.db.gz",
+        "version": "2026-03-09",
+    }
+
+
 def test_resolve_db_path_raises_on_sha_mismatch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     def _fake_get(url: str, **kwargs) -> _FakeResponse:
         return _FakeResponse(b"wrong-db")
@@ -132,6 +174,35 @@ def test_resolve_db_path_raises_on_sha_mismatch(tmp_path: Path, monkeypatch: pyt
             env={},
             cache_root=tmp_path / "cache",
         )
+
+
+def test_resolve_db_path_reuses_cached_decompressed_gzip_db(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    raw_payload = b"decompressed-db-contents"
+    compressed_payload = gzip.compress(raw_payload)
+    expected_sha = hashlib.sha256(raw_payload).hexdigest()
+    call_count = 0
+
+    def _fake_get(url: str, **kwargs) -> _FakeResponse:
+        nonlocal call_count
+        call_count += 1
+        return _FakeResponse(compressed_payload)
+
+    monkeypatch.setattr("etf_app.db_bootstrap.requests.get", _fake_get)
+
+    settings = {
+        "db_url": "https://example.com/releases/deploy_stage1_etf.db.gz",
+        "db_version": "2026-03-09",
+        "db_sha256": expected_sha,
+    }
+    first = resolve_db_path(default_path="missing-stage1_etf.db", secrets=settings, env={}, cache_root=tmp_path / "cache")
+    second = resolve_db_path(default_path="missing-stage1_etf.db", secrets=settings, env={}, cache_root=tmp_path / "cache")
+
+    assert first == second
+    assert first.name == "deploy_stage1_etf.db"
+    assert call_count == 1
 
 
 def test_resolve_db_path_downloads_from_private_backblaze_bucket(

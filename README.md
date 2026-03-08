@@ -68,15 +68,44 @@ $env:ETF_APP_DB_PATH='stage1_etf.db'
 streamlit run streamlit_app.py
 ```
 
-For Streamlit Cloud or any environment where the SQLite file is not checked into the repo, host the database file externally and provide a download URL instead:
+Build a slim deploy database for hosting:
 
-```toml
-db_url = "https://your-storage.example.com/stage1_etf.db"
-db_version = "2026-03-08"
-db_sha256 = "replace-with-the-file-sha256"
+```powershell
+etf-pipeline build-deploy-db --db-path stage1_etf.db --output-path deploy_stage1_etf.db
 ```
 
-Private Backblaze B2 buckets are also supported. Provide a bucket-scoped read key in Streamlit secrets:
+Compress the deploy database for hosting:
+
+```powershell
+@'
+import gzip
+import shutil
+from pathlib import Path
+
+source = Path("deploy_stage1_etf.db")
+target = Path("deploy_stage1_etf.db.gz")
+with source.open("rb") as src, gzip.open(target, "wb", compresslevel=9) as dst:
+    shutil.copyfileobj(src, dst)
+'@ | python -
+```
+
+For Streamlit Cloud or any environment where the SQLite file is not checked into the repo, the recommended path is:
+
+1. upload `deploy_stage1_etf.db.gz` as a GitHub Release asset
+2. point `db_url` at that direct asset URL
+3. set `db_sha256` to the SHA-256 of the decompressed `deploy_stage1_etf.db`
+
+Example:
+
+```toml
+db_url = "https://github.com/<owner>/<repo>/releases/download/<tag>/deploy_stage1_etf.db.gz"
+db_version = "2026-03-09"
+db_sha256 = "replace-with-the-sha256-of-deploy_stage1_etf.db"
+```
+
+The app will download the `.gz` asset once, decompress it into the local cache, verify the SHA against the decompressed SQLite file, and then open that cached `.db`.
+
+Private Backblaze B2 buckets are still supported if needed. Provide a bucket-scoped read key in Streamlit secrets:
 
 ```toml
 b2_key_id = "your-key-id"
@@ -92,6 +121,8 @@ Optional deployment settings:
 - `db_cache_name`: override the cached filename on the server
 - `db_cache_dir`: override the local cache directory on the server
 - `db_path`: keep using an already-mounted local file if your host provides one
+
+If both `db_url` and Backblaze B2 secrets are present, `db_url` wins.
 
 Legacy command names (`patch-data`, `stage1-refresh`, `classify-taxonomy`, `recommend-strategies`) still work.
 

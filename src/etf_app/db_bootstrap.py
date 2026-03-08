@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gzip
 import hashlib
 import json
 import tempfile
@@ -13,6 +14,7 @@ import requests
 DEFAULT_DB_FILENAME = "stage1_etf.db"
 DEFAULT_CACHE_DIRNAME = "ucits-etf-atlas"
 DOWNLOAD_CHUNK_SIZE = 1024 * 1024
+GZIP_SUFFIX = ".gz"
 
 
 def _normalized_text(value: object) -> Optional[str]:
@@ -91,7 +93,13 @@ def _cache_target_path(
     else:
         root = Path(tempfile.gettempdir()) / DEFAULT_CACHE_DIRNAME
     target_name = cache_name or Path(url.split("?", 1)[0]).name or default_name
+    if target_name.lower().endswith(GZIP_SUFFIX):
+        target_name = target_name[: -len(GZIP_SUFFIX)] or default_name
     return root / target_name
+
+
+def _download_uses_gzip(source_key: str) -> bool:
+    return source_key.split("?", 1)[0].lower().endswith(GZIP_SUFFIX)
 
 
 def _metadata_matches(
@@ -120,7 +128,9 @@ def _persist_download_stream(
     source_label: str,
 ) -> Path:
     target_path.parent.mkdir(parents=True, exist_ok=True)
-    temp_path = target_path.with_suffix(f"{target_path.suffix}.download")
+    download_uses_gzip = _download_uses_gzip(source_label)
+    temp_path = target_path.with_suffix(f"{target_path.suffix}.download{GZIP_SUFFIX if download_uses_gzip else ''}")
+    unpack_path = target_path.with_suffix(f"{target_path.suffix}.unpack") if download_uses_gzip else temp_path
     metadata_path = _metadata_path(target_path)
     expected_sha = sha256.lower() if sha256 is not None else None
     digest = hashlib.sha256() if expected_sha is not None else None
@@ -131,7 +141,7 @@ def _persist_download_stream(
             for chunk in stream_response.iter_content(chunk_size=DOWNLOAD_CHUNK_SIZE):
                 if chunk:
                     handle.write(chunk)
-                    if digest is not None:
+                    if digest is not None and not download_uses_gzip:
                         digest.update(chunk)
     except (requests.RequestException, ValueError) as exc:
         temp_path.unlink(missing_ok=True)
@@ -140,17 +150,34 @@ def _persist_download_stream(
         temp_path.unlink(missing_ok=True)
         raise RuntimeError(f"Failed to write the downloaded ETF database to `{target_path}`: {exc}") from exc
 
+    if download_uses_gzip:
+        try:
+            with gzip.open(temp_path, "rb") as compressed_handle, unpack_path.open("wb") as output_handle:
+                for chunk in iter(lambda: compressed_handle.read(DOWNLOAD_CHUNK_SIZE), b""):
+                    output_handle.write(chunk)
+                    if digest is not None:
+                        digest.update(chunk)
+        except OSError as exc:
+            unpack_path.unlink(missing_ok=True)
+            temp_path.unlink(missing_ok=True)
+            raise RuntimeError(f"Failed to decompress the ETF database from `{source_label}`: {exc}") from exc
+
     if expected_sha is not None and digest is not None:
         actual_sha = digest.hexdigest().lower()
         if actual_sha != expected_sha:
+            unpack_path.unlink(missing_ok=True)
             temp_path.unlink(missing_ok=True)
             raise RuntimeError(
                 f"Downloaded ETF database SHA-256 mismatch for `{source_label}`: expected {expected_sha}, got {actual_sha}."
             )
 
-    temp_path.replace(target_path)
+    unpack_path.replace(target_path)
+    if download_uses_gzip:
+        temp_path.unlink(missing_ok=True)
     persisted_metadata = {**metadata}
     persisted_metadata["source_key"] = metadata["source_key"]
+    if download_uses_gzip:
+        persisted_metadata["compression"] = "gzip"
     if version is not None:
         persisted_metadata["version"] = version
     if sha256 is not None:
