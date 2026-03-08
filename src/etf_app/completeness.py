@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 import datetime as dt
 import json
 import sqlite3
@@ -48,6 +49,14 @@ def _field_coverage(known: int, total: int) -> dict[str, object]:
     return {"known": known, "total": total, "pct": pct(known, total)}
 
 
+def table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
+    row = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name = ?",
+        (table_name,),
+    ).fetchone()
+    return row is not None
+
+
 def _write_json_artifact(path: Path, payload: dict[str, object]) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     try:
@@ -56,6 +65,25 @@ def _write_json_artifact(path: Path, payload: dict[str, object]) -> Path:
     except PermissionError:
         fallback = path.with_name(f"{path.stem}_latest{path.suffix}")
         fallback.write_text(json.dumps(payload, indent=2, ensure_ascii=True) + "\n", encoding="utf-8")
+        print(f"warning: {path.name} is locked; wrote {fallback.name} instead")
+        return fallback
+
+
+def _write_csv_artifact(path: Path, rows: list[dict[str, object]], fieldnames: list[str]) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    normalized_rows = [{field: row.get(field) for field in fieldnames} for row in rows]
+    try:
+        with path.open("w", newline="", encoding="utf-8") as handle:
+            writer = csv.DictWriter(handle, fieldnames=fieldnames)
+            writer.writeheader()
+            writer.writerows(normalized_rows)
+        return path
+    except PermissionError:
+        fallback = path.with_name(f"{path.stem}_latest{path.suffix}")
+        with fallback.open("w", newline="", encoding="utf-8") as handle:
+            writer = csv.DictWriter(handle, fieldnames=fieldnames)
+            writer.writeheader()
+            writer.writerows(normalized_rows)
         print(f"warning: {path.name} is locked; wrote {fallback.name} instead")
         return fallback
 
@@ -336,6 +364,229 @@ def collect_strategy_summary(
     }
 
 
+def collect_gap_rows(conn: sqlite3.Connection) -> list[dict[str, object]]:
+    snapshot_ctes = ""
+    snapshot_select = """
+            NULL AS ft_source_url,
+            NULL AS ft_quality_flag,
+            NULL AS ft_raw_json,
+            NULL AS latest_metadata_source,
+            NULL AS latest_metadata_url,
+            NULL AS latest_metadata_quality
+    """
+    snapshot_joins = ""
+    if table_exists(conn, "issuer_metadata_snapshot"):
+        snapshot_ctes = """
+        ,
+        latest_ft AS (
+            SELECT instrument_id, source_url, quality_flag, raw_json
+            FROM (
+                SELECT
+                    instrument_id,
+                    source_url,
+                    quality_flag,
+                    raw_json,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY instrument_id
+                        ORDER BY asof_date DESC, id DESC
+                    ) AS rn
+                FROM issuer_metadata_snapshot
+                WHERE source = 'ft_tearsheet'
+            )
+            WHERE rn = 1
+        ),
+        latest_issuer AS (
+            SELECT instrument_id, source, source_url, quality_flag
+            FROM (
+                SELECT
+                    instrument_id,
+                    source,
+                    source_url,
+                    quality_flag,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY instrument_id
+                        ORDER BY asof_date DESC, id DESC
+                    ) AS rn
+                FROM issuer_metadata_snapshot
+            )
+            WHERE rn = 1
+        )
+        """
+        snapshot_select = """
+            lf.source_url AS ft_source_url,
+            lf.quality_flag AS ft_quality_flag,
+            lf.raw_json AS ft_raw_json,
+            li.source AS latest_metadata_source,
+            li.source_url AS latest_metadata_url,
+            li.quality_flag AS latest_metadata_quality
+        """
+        snapshot_joins = """
+        LEFT JOIN latest_ft lf
+          ON lf.instrument_id = i.instrument_id
+        LEFT JOIN latest_issuer li
+          ON li.instrument_id = i.instrument_id
+        """
+
+    rows = conn.execute(
+        f"""
+        WITH ranked_primary AS (
+            SELECT
+                l.instrument_id,
+                l.ticker,
+                l.venue_mic,
+                l.trading_currency,
+                ROW_NUMBER() OVER (
+                    PARTITION BY l.instrument_id
+                    ORDER BY
+                        CASE WHEN COALESCE(l.primary_flag, 0) = 1 THEN 0 ELSE 1 END,
+                        l.listing_id
+                ) AS rn
+            FROM listing l
+            WHERE COALESCE(l.status, 'active') = 'active'
+        )
+        {snapshot_ctes}
+        SELECT
+            i.isin,
+            i.instrument_name,
+            COALESCE(iss.normalized_name, iss.issuer_name, 'Unknown') AS issuer_name,
+            rp.ticker,
+            rp.venue_mic,
+            rp.trading_currency,
+            pp.ongoing_charges,
+            pp.benchmark_name,
+            pp.distribution_policy,
+            pp.fund_size_value,
+            pp.domicile_country,
+            pp.replication_method,
+            COALESCE(t.asset_class, 'unknown') AS asset_class,
+            COALESCE(t.geography_region, 'unknown') AS geography_region,
+            t.equity_size,
+            t.equity_style,
+            t.sector,
+            t.bond_type,
+            t.duration_bucket,
+            {snapshot_select}
+        FROM instrument i
+        LEFT JOIN issuer iss
+          ON iss.issuer_id = i.issuer_id
+        LEFT JOIN ranked_primary rp
+          ON rp.instrument_id = i.instrument_id
+         AND rp.rn = 1
+        LEFT JOIN product_profile pp
+          ON pp.instrument_id = i.instrument_id
+        LEFT JOIN instrument_taxonomy t
+          ON t.instrument_id = i.instrument_id
+        {snapshot_joins}
+        WHERE COALESCE(i.universe_mvp_flag, 0) = 1
+        ORDER BY i.isin
+        """
+    ).fetchall()
+
+    gap_rows: list[dict[str, object]] = []
+    for row in rows:
+        asset_class = str(row["asset_class"] or "unknown")
+        missing_fields: list[str] = []
+        if row["ongoing_charges"] is None:
+            missing_fields.append("ongoing_charges")
+        if not str(row["benchmark_name"] or "").strip():
+            missing_fields.append("benchmark_name")
+        if not str(row["distribution_policy"] or "").strip():
+            missing_fields.append("distribution_policy")
+        if row["fund_size_value"] is None:
+            missing_fields.append("fund_size")
+        if not str(row["domicile_country"] or "").strip():
+            missing_fields.append("domicile_country")
+        if str(row["geography_region"] or "unknown") == "unknown":
+            missing_fields.append("region")
+        if not str(row["replication_method"] or "").strip():
+            missing_fields.append("replication_method")
+        if asset_class == "equity":
+            if not str(row["equity_size"] or "").strip():
+                missing_fields.append("equity_size")
+            if not str(row["equity_style"] or "").strip():
+                missing_fields.append("equity_style")
+            if not str(row["sector"] or "").strip():
+                missing_fields.append("sector")
+        if asset_class == "bond":
+            bond_type = str(row["bond_type"] or "")
+            duration_bucket = str(row["duration_bucket"] or "")
+            if not bond_type.strip() or bond_type.lower() == "unknown":
+                missing_fields.append("bond_type")
+            if not duration_bucket.strip() or duration_bucket.lower() == "unknown":
+                missing_fields.append("duration_bucket")
+        if not missing_fields:
+            continue
+
+        ft_payload: dict[str, object] = {}
+        try:
+            parsed_payload = json.loads(str(row["ft_raw_json"])) if row["ft_raw_json"] else {}
+        except (TypeError, ValueError, json.JSONDecodeError):
+            parsed_payload = {}
+        if isinstance(parsed_payload, dict):
+            ft_payload = parsed_payload
+
+        gap_rows.append(
+            {
+                "issuer": row["issuer_name"],
+                "isin": row["isin"],
+                "ticker": row["ticker"],
+                "venue": row["venue_mic"],
+                "currency": row["trading_currency"],
+                "asset_class": asset_class,
+                "instrument_name": row["instrument_name"],
+                "missing_count": len(missing_fields),
+                "missing_fields": ",".join(missing_fields),
+                "ft_status": row["ft_quality_flag"] or "not_attempted",
+                "ft_match_type": ft_payload.get("match_type"),
+                "ft_symbol": ft_payload.get("symbol"),
+                "ft_source_url": row["ft_source_url"],
+                "latest_metadata_source": row["latest_metadata_source"],
+                "latest_metadata_quality": row["latest_metadata_quality"],
+                "latest_metadata_url": row["latest_metadata_url"],
+                "benchmark_name": row["benchmark_name"],
+                "distribution_policy": row["distribution_policy"],
+                "fund_size_value": row["fund_size_value"],
+                "geography_region": row["geography_region"],
+                "equity_size": row["equity_size"],
+                "equity_style": row["equity_style"],
+                "sector": row["sector"],
+                "bond_type": row["bond_type"],
+                "duration_bucket": row["duration_bucket"],
+            }
+        )
+    return gap_rows
+
+
+def collect_gap_summary(rows: list[dict[str, object]]) -> dict[str, object]:
+    missing_field_counts: dict[str, int] = {}
+    ft_status_counts: dict[str, int] = {}
+    source_counts: dict[str, int] = {}
+    issuer_counts: dict[str, int] = {}
+
+    for row in rows:
+        issuer = str(row["issuer"] or "Unknown")
+        issuer_counts[issuer] = issuer_counts.get(issuer, 0) + 1
+        ft_status = str(row["ft_status"] or "not_attempted")
+        ft_status_counts[ft_status] = ft_status_counts.get(ft_status, 0) + 1
+        source = str(row["latest_metadata_source"] or "none")
+        source_counts[source] = source_counts.get(source, 0) + 1
+        for field_name in str(row["missing_fields"] or "").split(","):
+            if field_name:
+                missing_field_counts[field_name] = missing_field_counts.get(field_name, 0) + 1
+
+    top_gap_issuers = [
+        {"issuer": issuer, "count": count}
+        for issuer, count in sorted(issuer_counts.items(), key=lambda item: (-item[1], item[0]))[:20]
+    ]
+    return {
+        "rows_with_gaps": len(rows),
+        "missing_field_counts": dict(sorted(missing_field_counts.items(), key=lambda item: (-item[1], item[0]))),
+        "ft_status_counts": dict(sorted(ft_status_counts.items(), key=lambda item: (-item[1], item[0]))),
+        "latest_metadata_source_counts": dict(sorted(source_counts.items(), key=lambda item: (-item[1], item[0]))),
+        "top_gap_issuers": top_gap_issuers,
+    }
+
+
 def collect_completeness_snapshot(
     conn: sqlite3.Connection,
     *,
@@ -348,6 +599,7 @@ def collect_completeness_snapshot(
     allow_missing_fees: bool,
     allow_missing_currency: bool,
 ) -> dict[str, object]:
+    gap_rows = collect_gap_rows(conn)
     return {
         "generated_at": now_utc_iso(),
         "db_path": db_path,
@@ -371,13 +623,15 @@ def collect_completeness_snapshot(
             allow_missing_fees=allow_missing_fees,
             allow_missing_currency=allow_missing_currency,
         ),
+        "gap_summary": collect_gap_summary(gap_rows),
     }
 
 
-def print_completeness_summary(report_path: Path, snapshot: dict[str, object]) -> None:
+def print_completeness_summary(report_path: Path, snapshot: dict[str, object], gap_report_path: Path) -> None:
     profile = snapshot["product_profile"]
     taxonomy = snapshot["taxonomy"]
     strategy = snapshot["strategy_readiness"]
+    gap_summary = snapshot["gap_summary"]
     print(f"\ncompleteness_report: {report_path}")
     print(
         "profile ongoing_charges coverage: "
@@ -413,6 +667,8 @@ def print_completeness_summary(report_path: Path, snapshot: dict[str, object]) -
         "strict hard-filter candidates: "
         f"{strategy['strict_hard_filters']['kept']}/{strategy['strict_hard_filters']['considered']}"
     )
+    print(f"gap_report: {gap_report_path}")
+    print(f"rows with gaps: {gap_summary['rows_with_gaps']}")
 
 
 def generate_completeness_report(
@@ -457,5 +713,48 @@ def generate_completeness_report(
         conn.close()
 
     output_path = _write_json_artifact(Path(artifacts_dir) / "completeness_report.json", snapshot)
-    print_completeness_summary(output_path, snapshot)
+    conn = sqlite3.connect(str(db))
+    conn.row_factory = sqlite3.Row
+    try:
+        gap_rows = collect_gap_rows(conn)
+    finally:
+        conn.close()
+    gap_csv_fields = [
+        "issuer",
+        "isin",
+        "ticker",
+        "venue",
+        "currency",
+        "asset_class",
+        "instrument_name",
+        "missing_count",
+        "missing_fields",
+        "ft_status",
+        "ft_match_type",
+        "ft_symbol",
+        "ft_source_url",
+        "latest_metadata_source",
+        "latest_metadata_quality",
+        "latest_metadata_url",
+        "benchmark_name",
+        "distribution_policy",
+        "fund_size_value",
+        "geography_region",
+        "equity_size",
+        "equity_style",
+        "sector",
+        "bond_type",
+        "duration_bucket",
+    ]
+    gap_csv_path = _write_csv_artifact(Path(artifacts_dir) / "gap_report.csv", gap_rows, gap_csv_fields)
+    gap_json_path = _write_json_artifact(
+        Path(artifacts_dir) / "gap_report.json",
+        {
+            "generated_at": snapshot["generated_at"],
+            "db_path": str(db),
+            **snapshot["gap_summary"],
+        },
+    )
+    print_completeness_summary(output_path, snapshot, gap_json_path)
+    print(f"gap_report_csv: {gap_csv_path}")
     return output_path

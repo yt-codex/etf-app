@@ -93,6 +93,23 @@ NASDAQ_OBJECTIVE_HTML = """
 """
 
 
+FAMILY_MATCH_SUMMARY_HTML = """
+<div class="mod-tearsheet-overview__header__name">Amundi Prime Global UCITS ETF Acc</div>
+<div class="mod-aside__module">
+  <h2>Objective</h2>
+  <div>The objective of the Sub-Fund is to track the performance of Solactive GBS Global Markets Large &amp; Mid Cap USD Index (the "Index").</div>
+</div>
+<table class="mod-ui-table mod-ui-table--two-column">
+  <tr><th>Investment style (stocks)</th><td>Market Cap: Large<br/>Investment Style: Blend</td></tr>
+  <tr><th>Income treatment</th><td>Accumulation</td></tr>
+  <tr><th>Domicile</th><td>Luxembourg</td></tr>
+  <tr><th>ISIN</th><td>LU1931974692</td></tr>
+  <tr><th>Fund size</th><td>5.1bn EUR As of Feb 28 2026</td></tr>
+  <tr><th>Ongoing charge</th><td>0.05%</td></tr>
+</table>
+"""
+
+
 def make_db(tmp_path) -> str:
     db_path = tmp_path / "ft.sqlite"
     conn = sqlite3.connect(db_path)
@@ -204,6 +221,16 @@ def test_extract_ft_search_symbols_keeps_unique_etf_summary_symbols() -> None:
 def test_is_missing_ft_page_detects_ft_no_results_template() -> None:
     assert ft_enrich.is_missing_ft_page(NO_RESULTS_HTML) is True
     assert ft_enrich.is_missing_ft_page(SUMMARY_HTML) is False
+
+
+def test_generate_search_query_variants_expands_abbreviated_names() -> None:
+    variants = ft_enrich.generate_search_query_variants(
+        "Amundi Prime GLBL UCITS ETF DR - USD (C)",
+        "Amundi",
+    )
+
+    assert "AMUNDI PRIME GLOBAL UCITS ETF" in variants
+    assert "AMUNDI AMUNDI PRIME GLOBAL UCITS ETF" not in variants
 
 
 def test_load_targets_can_filter_by_ticker_or_isin(tmp_path) -> None:
@@ -328,7 +355,7 @@ def test_resolve_symbol_uses_search_fallback_when_direct_symbols_fail(tmp_path, 
 
     monkeypatch.setattr(ft_enrich, "fetch_html", fake_fetch_html)
 
-    symbol, summary_html, parsed = ft_enrich.resolve_symbol(
+    symbol, summary_html, parsed, match_type = ft_enrich.resolve_symbol(
         conn,
         object(),
         instrument_id=1,
@@ -340,6 +367,55 @@ def test_resolve_symbol_uses_search_fallback_when_direct_symbols_fail(tmp_path, 
     assert symbol == "SXR8:GER:EUR"
     assert summary_html == SUMMARY_HTML
     assert parsed["isin"] == "IE00B5BMR087"
+    assert match_type == "exact"
+
+
+def test_resolve_symbol_can_accept_family_equivalent_ft_share_class(tmp_path, monkeypatch) -> None:
+    db_path = make_db(tmp_path)
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    conn.execute("UPDATE instrument SET instrument_name = 'Amundi Prime GLBL UCITS ETF DR - USD (C)', isin = 'LU2089238203' WHERE instrument_id = 1")
+    conn.execute("UPDATE listing SET ticker = 'PRWU', trading_currency = 'USD' WHERE instrument_id = 1")
+    conn.commit()
+
+    monkeypatch.setattr(ft_enrich, "build_session", lambda: object())
+
+    def fake_fetch_html(_session, url: str) -> str | None:
+        if url == ft_enrich.summary_url("PRWU:LSE:USD"):
+            return None
+        if url == ft_enrich.search_url("LU2089238203"):
+            return ""
+        if url == ft_enrich.search_url("PRWU"):
+            return ""
+        if url == ft_enrich.search_url("Amundi Prime GLBL UCITS ETF DR - USD (C)"):
+            return ""
+        if url == ft_enrich.search_url("AMUNDI PRIME GLOBAL UCITS ETF DR USD"):
+            return ""
+        if url == ft_enrich.search_url("AMUNDI PRIME GLOBAL UCITS ETF"):
+            return """
+            <div class='search-results'>
+              <a href='/data/etfs/tearsheet/summary?s=F50A:GER:EUR'>Amundi Prime Global UCITS ETF Acc</a>
+            </div>
+            """
+        if url == ft_enrich.summary_url("F50A:GER:EUR"):
+            return FAMILY_MATCH_SUMMARY_HTML
+        return None
+
+    monkeypatch.setattr(ft_enrich, "fetch_html", fake_fetch_html)
+
+    symbol, summary_html, parsed, match_type = ft_enrich.resolve_symbol(
+        conn,
+        object(),
+        instrument_id=1,
+        expected_isin="LU2089238203",
+        venue="ALL",
+    )
+    conn.close()
+
+    assert symbol == "F50A:GER:EUR"
+    assert summary_html == FAMILY_MATCH_SUMMARY_HTML
+    assert parsed["benchmark_name"] == "Solactive GBS Global Markets Large & Mid Cap USD Index"
+    assert match_type == "family"
 
 
 def test_run_ft_metadata_backfill_updates_profile_and_taxonomy(tmp_path, monkeypatch) -> None:

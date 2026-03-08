@@ -27,6 +27,44 @@ FT_EXCHANGE_BY_VENUE = {
     "XETR": "GER",
 }
 SUPPORTED_VENUES = tuple(FT_EXCHANGE_BY_VENUE)
+FT_QUERY_TOKEN_REPLACEMENTS = (
+    ("U.ETFEOA", "UCITS ETF"),
+    ("U.ETFDLA", "UCITS ETF"),
+    ("U.ETF", "UCITS ETF"),
+    ("U ETF", "UCITS ETF"),
+    ("BNPPE", "BNP PARIBAS EASY"),
+    ("BNPP", "BNP PARIBAS"),
+    ("OSSL", "OSSIAM"),
+    ("GLBL", "GLOBAL"),
+    ("WLD", "WORLD"),
+    ("WO", "WORLD"),
+    ("TECH", "TECHNOLOGY"),
+    ("TRSY", "TREASURY"),
+    ("AGG BD", "AGGREGATE BOND"),
+    ("AGG", "AGGREGATE"),
+    ("BD", "BOND"),
+    ("E.G.B.", "EURO GOVERNMENT BOND"),
+)
+FT_FAMILY_STOP_TOKENS = {
+    "UCITS",
+    "ETF",
+    "ACC",
+    "ACCUMULATING",
+    "DIST",
+    "DISTRIBUTING",
+    "USD",
+    "GBP",
+    "EUR",
+    "CLASS",
+    "PLC",
+    "SICAV",
+    "ICAV",
+    "FUND",
+    "DR",
+    "C",
+    "D",
+    "H",
+}
 
 
 @dataclass
@@ -71,6 +109,85 @@ def normalize_identifier_values(values: Optional[list[str]]) -> list[str]:
         seen.add(normalized)
         out.append(normalized)
     return out
+
+
+def expand_ft_query_text(value: str) -> str:
+    text = normalize_space(value).upper()
+    for source, target in FT_QUERY_TOKEN_REPLACEMENTS:
+        text = text.replace(source, target)
+    text = text.replace("$", " ")
+    text = text.replace("(", " ").replace(")", " ")
+    text = text.replace("/", " ").replace("-", " ")
+    return normalize_space(text)
+
+
+def normalize_ft_family_signature(value: str) -> tuple[str, ...]:
+    expanded = expand_ft_query_text(value)
+    normalized = re.sub(r"[^A-Z0-9]+", " ", expanded)
+    tokens: list[str] = []
+    for token in normalized.split():
+        if token in FT_FAMILY_STOP_TOKENS:
+            continue
+        if token == "PARIBAS":
+            continue
+        if re.fullmatch(r"\d+[A-Z]*", token):
+            continue
+        tokens.append(token)
+    return tuple(tokens)
+
+
+def generate_search_query_variants(instrument_name: str, issuer_name: str | None = None) -> list[str]:
+    expanded = expand_ft_query_text(instrument_name)
+    stripped_share_class = normalize_space(re.sub(r"\b(DR|USD|GBP|EUR|ACC|DIST|C|D|H)\b", " ", expanded))
+    stripped_currency = normalize_space(re.sub(r"\b(DR|USD|GBP|EUR|C|D|H)\b", " ", expanded))
+    stripped_distribution = normalize_space(re.sub(r"\b(ACC|DIST)\b", " ", stripped_currency))
+    raw_issuer = normalize_space(issuer_name or "")
+    expanded_issuer = expand_ft_query_text(raw_issuer) if raw_issuer else ""
+
+    queries: list[str] = []
+    seen: set[str] = set()
+
+    def add_query(value: str) -> None:
+        query = normalize_space(value)
+        if len(query) < 6 or query in seen:
+            return
+        seen.add(query)
+        queries.append(query)
+
+    add_query(expanded)
+    add_query(stripped_share_class)
+    add_query(stripped_currency)
+    add_query(stripped_distribution)
+    if expanded_issuer:
+        for variant in (stripped_share_class, stripped_distribution):
+            if variant.startswith(f"{expanded_issuer} "):
+                add_query(variant)
+            else:
+                add_query(f"{expanded_issuer} {variant}")
+    return queries
+
+
+def is_family_equivalent_ft_candidate(target_name: str, candidate_name: str) -> bool:
+    target_signature = normalize_ft_family_signature(target_name)
+    candidate_signature = normalize_ft_family_signature(candidate_name)
+    if len(target_signature) < 3 or len(candidate_signature) < 3:
+        return False
+    return target_signature == candidate_signature
+
+
+def has_useful_summary_metadata(parsed: dict[str, object]) -> bool:
+    return any(
+        parsed.get(key) is not None
+        for key in (
+            "benchmark_name",
+            "domicile_country",
+            "fund_size_value",
+            "equity_size_hint",
+            "equity_style_hint",
+            "ter",
+            "use_of_income",
+        )
+    )
 
 
 def table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
@@ -619,14 +736,28 @@ def load_search_queries(conn: sqlite3.Connection, instrument_id: int, expected_i
         queries.append(text)
 
     add_query(expected_isin)
-    row = conn.execute(
-        """
-        SELECT instrument_name
-        FROM instrument
-        WHERE instrument_id = ?
-        """,
-        (instrument_id,),
-    ).fetchone()
+    if table_exists(conn, "issuer"):
+        row = conn.execute(
+            """
+            SELECT
+                i.instrument_name,
+                COALESCE(iss.normalized_name, iss.issuer_name) AS issuer_name
+            FROM instrument i
+            LEFT JOIN issuer iss
+              ON iss.issuer_id = i.issuer_id
+            WHERE i.instrument_id = ?
+            """,
+            (instrument_id,),
+        ).fetchone()
+    else:
+        row = conn.execute(
+            """
+            SELECT instrument_name, NULL AS issuer_name
+            FROM instrument
+            WHERE instrument_id = ?
+            """,
+            (instrument_id,),
+        ).fetchone()
     listing_rows = conn.execute(
         """
         SELECT ticker
@@ -642,7 +773,10 @@ def load_search_queries(conn: sqlite3.Connection, instrument_id: int, expected_i
     for listing_row in listing_rows:
         add_query(listing_row["ticker"])
     if row is not None:
-        add_query(row["instrument_name"])
+        instrument_name = str(row["instrument_name"] or "")
+        add_query(instrument_name)
+        for variant in generate_search_query_variants(instrument_name, str(row["issuer_name"] or "")):
+            add_query(variant)
     return queries
 
 
@@ -810,35 +944,55 @@ def resolve_symbol(
     instrument_id: int,
     expected_isin: str,
     venue: str,
-) -> tuple[Optional[str], Optional[str], dict[str, object]]:
+) -> tuple[Optional[str], Optional[str], dict[str, object], str]:
+    target_row = conn.execute(
+        """
+        SELECT instrument_name
+        FROM instrument
+        WHERE instrument_id = ?
+        """,
+        (instrument_id,),
+    ).fetchone()
+    target_name = str(target_row["instrument_name"] or "") if target_row is not None else ""
     attempted_symbols: set[str] = set()
+    family_candidate: tuple[Optional[str], Optional[str], dict[str, object], str] = (None, None, {}, "unresolved")
 
-    def try_symbol(symbol: str) -> tuple[Optional[str], Optional[str], dict[str, object]]:
+    def try_symbol(symbol: str) -> tuple[Optional[str], Optional[str], dict[str, object], str]:
         if symbol in attempted_symbols:
-            return None, None, {}
+            return None, None, {}, "unresolved"
         attempted_symbols.add(symbol)
         html = fetch_html(session, summary_url(symbol))
         if html is None:
-            return None, None, {}
+            return None, None, {}, "unresolved"
         parsed = parse_ft_summary_html(html)
-        if normalize_space(parsed.get("isin")) != expected_isin:
-            return None, None, {}
-        return symbol, html, parsed
+        parsed_isin = normalize_space(parsed.get("isin"))
+        if parsed_isin == expected_isin:
+            return symbol, html, parsed, "exact"
+        candidate_name = str(parsed.get("instrument_name") or "")
+        if has_useful_summary_metadata(parsed) and candidate_name and is_family_equivalent_ft_candidate(target_name, candidate_name):
+            return symbol, html, parsed, "family"
+        return None, None, {}, "unresolved"
 
     for symbol in load_symbol_candidates(conn, instrument_id, venue):
-        matched_symbol, html, parsed = try_symbol(symbol)
+        matched_symbol, html, parsed, match_type = try_symbol(symbol)
         if matched_symbol is not None:
-            return matched_symbol, html, parsed
+            if match_type == "exact":
+                return matched_symbol, html, parsed, match_type
+            if family_candidate[0] is None:
+                family_candidate = (matched_symbol, html, parsed, match_type)
 
     for query in load_search_queries(conn, instrument_id, expected_isin):
         search_html = fetch_html(session, search_url(query))
         if search_html is None:
             continue
         for symbol in extract_ft_search_symbols(search_html):
-            matched_symbol, html, parsed = try_symbol(symbol)
+            matched_symbol, html, parsed, match_type = try_symbol(symbol)
             if matched_symbol is not None:
-                return matched_symbol, html, parsed
-    return None, None, {}
+                if match_type == "exact":
+                    return matched_symbol, html, parsed, match_type
+                if family_candidate[0] is None:
+                    family_candidate = (matched_symbol, html, parsed, match_type)
+    return family_candidate
 
 
 def flush_derived_tables(conn: sqlite3.Connection, stats: FtBackfillStats) -> None:
@@ -873,7 +1027,7 @@ def run_ft_metadata_backfill(
             stats.attempted += 1
             instrument_id = int(row["instrument_id"])
             isin = str(row["isin"])
-            symbol, summary_html, summary_parsed = resolve_symbol(
+            symbol, summary_html, summary_parsed, match_type = resolve_symbol(
                 conn,
                 session,
                 instrument_id=instrument_id,
@@ -926,10 +1080,15 @@ def run_ft_metadata_backfill(
                 "sector_hint": holdings_parsed.get("sector_hint"),
                 "sector_weight": holdings_parsed.get("sector_weight"),
             }
+            if match_type != "exact":
+                if str(summary_parsed.get("fund_size_scope") or "") != "fund":
+                    for key in ("fund_size_value", "fund_size_currency", "fund_size_asof", "fund_size_scope"):
+                        profile_metadata[key] = None
             raw_json = {
                 "source": FT_SOURCE,
                 "parser_version": PARSER_VERSION,
                 "symbol": symbol,
+                "match_type": match_type,
                 "summary_url": summary_page_url,
                 "holdings_url": holdings_page_url,
                 "profile_metadata": {key: value for key, value in profile_metadata.items() if value is not None},
@@ -937,7 +1096,8 @@ def run_ft_metadata_backfill(
             if summary_parsed.get("instrument_name"):
                 raw_json["instrument_name"] = summary_parsed["instrument_name"]
             if summary_parsed.get("isin"):
-                raw_json["isin"] = summary_parsed["isin"]
+                raw_json["matched_isin"] = summary_parsed["isin"]
+            raw_json["expected_isin"] = isin
             if holdings_parsed.get("sector_weights"):
                 raw_json["sector_weights"] = holdings_parsed["sector_weights"]
 
@@ -946,10 +1106,10 @@ def run_ft_metadata_backfill(
                 instrument_id=instrument_id,
                 asof_date=str(summary_parsed.get("fund_size_asof") or today_iso()),
                 source_url=summary_page_url,
-                ter=summary_parsed.get("ter"),
-                use_of_income=summary_parsed.get("use_of_income"),
-                ucits_compliant=summary_parsed.get("ucits_compliant"),
-                quality_flag="ft_tearsheet_ok",
+                ter=summary_parsed.get("ter") if match_type == "exact" else None,
+                use_of_income=summary_parsed.get("use_of_income") if match_type == "exact" else None,
+                ucits_compliant=summary_parsed.get("ucits_compliant") if match_type == "exact" else None,
+                quality_flag="ft_tearsheet_ok" if match_type == "exact" else "ft_tearsheet_family_match",
                 raw_json=raw_json,
             )
             upsert_url_map(conn, instrument_id, "ft_summary_page", summary_page_url)
