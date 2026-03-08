@@ -71,6 +71,34 @@ def test_find_ongoing_charges_windowed_prefers_annual_cost_impact() -> None:
     assert attempts[0]["preferred_plausible"] == 0.4
 
 
+def test_find_ongoing_charges_windowed_prefers_label_attached_charge_over_transaction_cost() -> None:
+    text = (
+        "Ongoing charges Management fees and other administrative or operating costs 0.19% "
+        "Transaction costs 0.02% Incidental costs performance fees 0.00% "
+    )
+
+    ongoing, attempts, _ = find_ongoing_charges_windowed(text)
+
+    assert ongoing == 0.19
+    assert attempts[0]["first_after_keyword_plausible"] == 0.19
+    assert attempts[0]["preferred_plausible"] == 0.02
+
+
+def test_find_ongoing_charges_windowed_keeps_earliest_direct_charge_when_later_window_is_lower() -> None:
+    text = (
+        "Ongoing charges Management fees and other administrative or operating costs 0.19% "
+        "Transaction costs 0.02% "
+        "Further information follows. "
+        "Ongoing costs in the reduction in yield table show Annual cost impact 0.02% each year. "
+    )
+
+    ongoing, attempts, _ = find_ongoing_charges_windowed(text)
+
+    assert ongoing == 0.19
+    assert attempts[0]["selected"] == 0.19
+    assert attempts[1]["selected"] == 0.02
+
+
 def test_find_ongoing_charges_windowed_rejects_implausible_only_values() -> None:
     ongoing, attempts, _ = find_ongoing_charges_windowed(
         "Ongoing costs 34.9 % 57.6 % 10.8 %"
@@ -220,3 +248,81 @@ def test_load_universe_rows_prioritizes_missing_fee_rows() -> None:
     )
 
     assert [row["isin"] for row in rows] == ["IE00MISSFEE1", "IE00HASFEE2"]
+
+
+def test_load_universe_rows_can_select_all_active_etfs_outside_universe_scope() -> None:
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.executescript(
+        """
+        CREATE TABLE universe_mvp(
+            instrument_id TEXT,
+            isin TEXT,
+            instrument_name TEXT,
+            instrument_type TEXT,
+            primary_venue_mic TEXT,
+            issuer_normalized TEXT
+        );
+        CREATE TABLE instrument(
+            instrument_id INTEGER PRIMARY KEY,
+            isin TEXT,
+            instrument_name TEXT,
+            instrument_type TEXT,
+            status TEXT,
+            issuer_id INTEGER,
+            issuer_source TEXT
+        );
+        CREATE TABLE listing(
+            listing_id INTEGER PRIMARY KEY,
+            instrument_id INTEGER,
+            venue_mic TEXT,
+            ticker TEXT,
+            primary_flag INTEGER,
+            status TEXT
+        );
+        CREATE TABLE issuer(
+            issuer_id INTEGER PRIMARY KEY,
+            normalized_name TEXT,
+            domain TEXT
+        );
+        CREATE TABLE cost_snapshot(
+            cost_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            instrument_id INTEGER,
+            asof_date TEXT,
+            ongoing_charges REAL NULL,
+            entry_costs REAL NULL,
+            exit_costs REAL NULL,
+            transaction_costs REAL NULL,
+            doc_id INTEGER,
+            quality_flag TEXT,
+            raw_json TEXT
+        );
+        CREATE VIEW instrument_cost_current AS
+        SELECT c.instrument_id, c.ongoing_charges
+        FROM cost_snapshot c
+        JOIN (
+            SELECT instrument_id, MAX(cost_id) AS max_cost_id
+            FROM cost_snapshot
+            GROUP BY instrument_id
+        ) latest ON latest.max_cost_id = c.cost_id;
+        INSERT INTO issuer(issuer_id, normalized_name, domain) VALUES
+            (1, 'HSBC', 'hsbc.com');
+        INSERT INTO instrument(instrument_id, isin, instrument_name, instrument_type, status, issuer_id, issuer_source) VALUES
+            (990, 'IE0002UTLE51', 'HSBC WLD ESG BIODIV SCREENED ETF USD ACC', 'ETF', 'active', 1, 'manual');
+        INSERT INTO listing(listing_id, instrument_id, venue_mic, ticker, primary_flag, status) VALUES
+            (1, 990, 'XLON', 'HBDV', 1, 'active');
+        """
+    )
+
+    rows = load_universe_rows(
+        conn,
+        limit=None,
+        venue="ALL",
+        priority_mode=False,
+        mode="template",
+        issuer_filters=["HSBC"],
+        selection_scope="all-etfs",
+    )
+
+    assert len(rows) == 1
+    assert rows[0]["isin"] == "IE0002UTLE51"

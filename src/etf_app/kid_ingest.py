@@ -27,7 +27,7 @@ try:
 except Exception:
     fitz = None
 
-PARSER_VERSION = "stage2_kid_ingest_v2_3"
+PARSER_VERSION = "stage2_kid_ingest_v2_4"
 DOC_TYPE = "PRIIPS_KID"
 
 BANNED_RESULT_DOMAINS = {
@@ -277,6 +277,12 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         action="append",
         default=[],
         help="Optional issuer filter; repeat or pass comma-separated values",
+    )
+    parser.add_argument(
+        "--selection-scope",
+        choices=["universe", "all-etfs"],
+        default="universe",
+        help="Choose between universe_mvp or all active ETF primary listings",
     )
     return parser.parse_args(argv)
 
@@ -1170,7 +1176,8 @@ def find_ongoing_charges_windowed(
     pct_regex = re.compile(r"([0-9]{1,2}(?:[.,][0-9]{1,3})?)\s*%")
 
     attempts: list[dict[str, object]] = []
-    best_plausible: Optional[float] = None
+    first_direct_plausible: Optional[float] = None
+    best_fallback_plausible: Optional[float] = None
     first_keyword_idx: Optional[int] = None
 
     for m in keyword_regex.finditer(text):
@@ -1189,21 +1196,30 @@ def find_ongoing_charges_windowed(
             parsed_pairs.append((abs_pos, parsed, pm.group(1)))
 
         first_after_keyword: Optional[float] = None
+        first_after_keyword_plausible: Optional[float] = None
         for abs_pos, parsed, _ in parsed_pairs:
             if abs_pos >= m.start():
                 first_after_keyword = parsed
+                if 0 <= parsed <= 3:
+                    first_after_keyword_plausible = parsed
                 break
 
         chosen = first_after_keyword if first_after_keyword is not None else (parsed_pairs[0][1] if parsed_pairs else None)
         plausible = [v for _, v, _ in parsed_pairs if 0 <= v <= 3]
         plausible_positive = [v for v in plausible if v > 0]
         preferred_plausible = min(plausible_positive) if plausible_positive else (min(plausible) if plausible else None)
-        if preferred_plausible is not None:
+        if first_after_keyword_plausible is not None:
+            chosen = first_after_keyword_plausible
+        elif preferred_plausible is not None:
             chosen = preferred_plausible
-        if preferred_plausible is not None:
-            candidate = preferred_plausible
-            if best_plausible is None or candidate < best_plausible:
-                best_plausible = candidate
+        if chosen is not None and 0 <= chosen <= 3:
+            if first_after_keyword_plausible is not None:
+                if first_direct_plausible is None:
+                    first_direct_plausible = first_after_keyword_plausible
+            else:
+                candidate = chosen
+                if best_fallback_plausible is None or candidate < best_fallback_plausible:
+                    best_fallback_plausible = candidate
         attempts.append(
             {
                 "keyword": m.group(0),
@@ -1214,12 +1230,17 @@ def find_ongoing_charges_windowed(
                 "parsed_values": [val for _, val, _ in parsed_pairs[:12]],
                 "plausible_0_3": plausible[:12],
                 "first_after_keyword": first_after_keyword,
+                "first_after_keyword_plausible": first_after_keyword_plausible,
                 "preferred_plausible": preferred_plausible,
                 "selected": chosen,
             }
         )
 
-    return best_plausible, attempts, first_keyword_idx
+    return (
+        first_direct_plausible if first_direct_plausible is not None else best_fallback_plausible,
+        attempts,
+        first_keyword_idx,
+    )
 
 
 def detect_language_from_url(url: str) -> Optional[str]:
@@ -1729,11 +1750,61 @@ def load_universe_rows(
     priority_mode: bool,
     mode: str,
     issuer_filters: Optional[list[str]] = None,
+    selection_scope: str = "universe",
 ) -> list[sqlite3.Row]:
-    where_clauses = ["UPPER(COALESCE(u.instrument_type, '')) = 'ETF'"]
+    if selection_scope == "all-etfs":
+        base_sql = """
+            SELECT
+                i.instrument_id AS instrument_id,
+                i.isin,
+                i.instrument_name,
+                i.issuer_id,
+                i.issuer_source,
+                iss.normalized_name AS issuer_normalized,
+                iss.domain AS issuer_domain,
+                l.venue_mic AS primary_venue_mic
+            FROM instrument i
+            JOIN listing l
+              ON l.instrument_id = i.instrument_id
+             AND l.primary_flag = 1
+             AND COALESCE(l.status, 'active') = 'active'
+            LEFT JOIN issuer iss ON iss.issuer_id = i.issuer_id
+            LEFT JOIN instrument_cost_current icc ON icc.instrument_id = i.instrument_id
+        """
+        issuer_hint_sql = "iss.normalized_name"
+        issuer_name_sql = "iss.normalized_name"
+        instrument_name_sql = "i.instrument_name"
+        isin_sql = "i.isin"
+        venue_sql = "l.venue_mic"
+        where_clauses = [
+            "UPPER(COALESCE(i.instrument_type, '')) = 'ETF'",
+            "COALESCE(i.status, 'active') = 'active'",
+        ]
+    else:
+        base_sql = """
+            SELECT
+                CAST(u.instrument_id AS INTEGER) AS instrument_id,
+                u.isin,
+                u.instrument_name,
+                i.issuer_id,
+                i.issuer_source,
+                iss.normalized_name AS issuer_normalized,
+                iss.domain AS issuer_domain,
+                u.primary_venue_mic
+            FROM universe_mvp u
+            JOIN instrument i ON i.instrument_id = CAST(u.instrument_id AS INTEGER)
+            LEFT JOIN issuer iss ON iss.issuer_id = i.issuer_id
+            LEFT JOIN instrument_cost_current icc ON icc.instrument_id = i.instrument_id
+        """
+        issuer_hint_sql = "u.issuer_normalized"
+        issuer_name_sql = "iss.normalized_name"
+        instrument_name_sql = "u.instrument_name"
+        isin_sql = "u.isin"
+        venue_sql = "u.primary_venue_mic"
+        where_clauses = ["UPPER(COALESCE(u.instrument_type, '')) = 'ETF'"]
     params: list[object] = []
     if venue != "ALL":
-        where_clauses.append("u.primary_venue_mic = ?")
+        where_clauses.append(f"{venue_sql} = ?")
         params.append(venue)
 
     if issuer_filters:
@@ -1743,9 +1814,9 @@ def load_universe_rows(
             pattern = f"%{term}%"
             issuer_clauses.append(
                 "("
-                "UPPER(COALESCE(u.issuer_normalized, '')) LIKE ? OR "
-                "UPPER(COALESCE(iss.normalized_name, '')) LIKE ? OR "
-                "UPPER(COALESCE(u.instrument_name, '')) LIKE ?"
+                f"UPPER(COALESCE({issuer_hint_sql}, '')) LIKE ? OR "
+                f"UPPER(COALESCE({issuer_name_sql}, '')) LIKE ? OR "
+                f"UPPER(COALESCE({instrument_name_sql}, '')) LIKE ?"
                 ")"
             )
             params.extend([pattern, pattern, pattern])
@@ -1755,18 +1826,18 @@ def load_universe_rows(
     if mode == "template":
         where_clauses.append(
             "("
-            "UPPER(COALESCE(iss.normalized_name, '')) LIKE '%VANGUARD%' OR "
-            "UPPER(COALESCE(iss.normalized_name, '')) LIKE '%INVESCO%' OR "
-            "UPPER(COALESCE(iss.normalized_name, '')) LIKE '%XTRACKERS%' OR "
-            "UPPER(COALESCE(iss.normalized_name, '')) LIKE '%AMUNDI%' OR "
-            "UPPER(COALESCE(iss.normalized_name, '')) LIKE '%HSBC%' OR "
-            "UPPER(COALESCE(iss.normalized_name, '')) LIKE '%WISDOMTREE%' OR "
-            "UPPER(COALESCE(u.instrument_name, '')) LIKE '%VANGUARD%' OR "
-            "UPPER(COALESCE(u.instrument_name, '')) LIKE '%INVESCO%' OR "
-            "UPPER(COALESCE(u.instrument_name, '')) LIKE '%XTRACKERS%' OR "
-            "UPPER(COALESCE(u.instrument_name, '')) LIKE '%AMUNDI%' OR "
-            "UPPER(COALESCE(u.instrument_name, '')) LIKE '%HSBC%' OR "
-            "UPPER(COALESCE(u.instrument_name, '')) LIKE '%WISDOMTREE%'"
+            f"UPPER(COALESCE({issuer_name_sql}, '')) LIKE '%VANGUARD%' OR "
+            f"UPPER(COALESCE({issuer_name_sql}, '')) LIKE '%INVESCO%' OR "
+            f"UPPER(COALESCE({issuer_name_sql}, '')) LIKE '%XTRACKERS%' OR "
+            f"UPPER(COALESCE({issuer_name_sql}, '')) LIKE '%AMUNDI%' OR "
+            f"UPPER(COALESCE({issuer_name_sql}, '')) LIKE '%HSBC%' OR "
+            f"UPPER(COALESCE({issuer_name_sql}, '')) LIKE '%WISDOMTREE%' OR "
+            f"UPPER(COALESCE({instrument_name_sql}, '')) LIKE '%VANGUARD%' OR "
+            f"UPPER(COALESCE({instrument_name_sql}, '')) LIKE '%INVESCO%' OR "
+            f"UPPER(COALESCE({instrument_name_sql}, '')) LIKE '%XTRACKERS%' OR "
+            f"UPPER(COALESCE({instrument_name_sql}, '')) LIKE '%AMUNDI%' OR "
+            f"UPPER(COALESCE({instrument_name_sql}, '')) LIKE '%HSBC%' OR "
+            f"UPPER(COALESCE({instrument_name_sql}, '')) LIKE '%WISDOMTREE%'"
             ")"
         )
 
@@ -1782,38 +1853,26 @@ def load_universe_rows(
         fee_case = "CASE WHEN icc.ongoing_charges IS NULL THEN 0 ELSE 1 END"
         token_case = (
             "CASE "
-            "WHEN UPPER(COALESCE(u.issuer_normalized, iss.normalized_name, '')) IN ("
+            f"WHEN UPPER(COALESCE({issuer_hint_sql}, {issuer_name_sql}, '')) IN ("
             + issuer_placeholders
             + ") THEN 0 "
-            "WHEN UPPER(COALESCE(u.instrument_name, '')) LIKE '%ISHARES%' "
-            "OR UPPER(COALESCE(u.instrument_name, '')) LIKE '%VANGUARD%' "
-            "OR UPPER(COALESCE(u.instrument_name, '')) LIKE '%SPDR%' "
-            "OR UPPER(COALESCE(u.instrument_name, '')) LIKE '%INVESCO%' "
-            "OR UPPER(COALESCE(u.instrument_name, '')) LIKE '%AMUNDI%' "
-            "OR UPPER(COALESCE(u.instrument_name, '')) LIKE '%XTRACKERS%' "
-            "OR UPPER(COALESCE(u.instrument_name, '')) LIKE '%HSBC%' "
-            "OR UPPER(COALESCE(u.instrument_name, '')) LIKE '%WISDOMTREE%' "
-            "OR UPPER(COALESCE(u.instrument_name, '')) LIKE '%VANECK%' "
+            f"WHEN UPPER(COALESCE({instrument_name_sql}, '')) LIKE '%ISHARES%' "
+            f"OR UPPER(COALESCE({instrument_name_sql}, '')) LIKE '%VANGUARD%' "
+            f"OR UPPER(COALESCE({instrument_name_sql}, '')) LIKE '%SPDR%' "
+            f"OR UPPER(COALESCE({instrument_name_sql}, '')) LIKE '%INVESCO%' "
+            f"OR UPPER(COALESCE({instrument_name_sql}, '')) LIKE '%AMUNDI%' "
+            f"OR UPPER(COALESCE({instrument_name_sql}, '')) LIKE '%XTRACKERS%' "
+            f"OR UPPER(COALESCE({instrument_name_sql}, '')) LIKE '%HSBC%' "
+            f"OR UPPER(COALESCE({instrument_name_sql}, '')) LIKE '%WISDOMTREE%' "
+            f"OR UPPER(COALESCE({instrument_name_sql}, '')) LIKE '%VANECK%' "
             "THEN 1 ELSE 2 END"
         )
-        order_sql = f"ORDER BY {fee_case}, {token_case}, u.isin"
+        order_sql = f"ORDER BY {fee_case}, {token_case}, {isin_sql}"
     else:
-        order_sql = "ORDER BY CASE WHEN icc.ongoing_charges IS NULL THEN 0 ELSE 1 END, u.isin"
+        order_sql = f"ORDER BY CASE WHEN icc.ongoing_charges IS NULL THEN 0 ELSE 1 END, {isin_sql}"
 
     sql = f"""
-        SELECT
-            CAST(u.instrument_id AS INTEGER) AS instrument_id,
-            u.isin,
-            u.instrument_name,
-            i.issuer_id,
-            i.issuer_source,
-            iss.normalized_name AS issuer_normalized,
-            iss.domain AS issuer_domain,
-            u.primary_venue_mic
-        FROM universe_mvp u
-        JOIN instrument i ON i.instrument_id = CAST(u.instrument_id AS INTEGER)
-        LEFT JOIN issuer iss ON iss.issuer_id = i.issuer_id
-        LEFT JOIN instrument_cost_current icc ON icc.instrument_id = i.instrument_id
+        {base_sql}
         {where_sql}
         {order_sql}
     """
@@ -2302,11 +2361,20 @@ def main(argv: list[str]) -> int:
         log(
             f"Selection mode: mode={args.mode}, venue={args.venue}, "
             f"priority_mode={'on' if priority_mode else 'off'}, parse_only={args.parse_only}, "
-            f"issuer_filters={issuer_filters if issuer_filters else 'none'}"
+            f"issuer_filters={issuer_filters if issuer_filters else 'none'}, "
+            f"selection_scope={args.selection_scope}"
         )
-        rows = load_universe_rows(conn, args.limit, args.venue, priority_mode, args.mode, issuer_filters)
+        rows = load_universe_rows(
+            conn,
+            args.limit,
+            args.venue,
+            priority_mode,
+            args.mode,
+            issuer_filters,
+            selection_scope=args.selection_scope,
+        )
         if not rows:
-            log("No universe_mvp rows to process.")
+            log("No selected rows to process.")
             conn.commit()
             return 0
 
