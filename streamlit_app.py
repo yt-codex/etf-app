@@ -11,6 +11,7 @@ import streamlit as st
 import streamlit.components.v1 as components
 
 from etf_app.api import (
+    BLANK_SECTOR_TOKEN,
     get_completeness_snapshot,
     get_custom_strategy_snapshot,
     get_strategy_snapshot,
@@ -76,6 +77,7 @@ MAX_CUSTOM_BUCKETS = 10
 VIEW_OPTIONS = ["Explorer", "Strategies", "Custom", "Coverage"]
 CUSTOM_BUCKET_IDS_KEY = "custom_bucket_ids"
 CUSTOM_BUCKET_NEXT_ID_KEY = "custom_bucket_next_id"
+NON_SECTOR_SPECIFIC_LABEL = "Non sector specific"
 
 EXPLORER_COLUMNS = [
     "Asset type",
@@ -514,6 +516,8 @@ def _format_filter_value(field: str, value: object) -> str:
     if field == "equity_style":
         return _display_value(_pretty_label(value, STYLE_LABELS))
     if field == "sector":
+        if str(value) == BLANK_SECTOR_TOKEN:
+            return NON_SECTOR_SPECIFIC_LABEL
         return _display_value(_pretty_label(value))
     if field == "bond_type":
         return _display_value(_pretty_label(value, BOND_TYPE_LABELS))
@@ -531,6 +535,19 @@ def _selectbox_label(value: str, *, placeholder: str, field: str) -> str:
     if value == placeholder:
         return value
     return _format_filter_value(field, value)
+
+
+def _fee_range_bounds(filters_payload: dict[str, object]) -> tuple[float, float]:
+    fee_range = filters_payload.get("fee_range") or {}
+    min_value = fee_range.get("min")
+    max_value = fee_range.get("max")
+    if min_value is None or max_value is None:
+        return (0.0, 1.0)
+    return (round(float(min_value), 2), round(float(max_value), 2))
+
+
+def _format_ter_range(value: tuple[float, float]) -> str:
+    return f"{value[0]:.2f}% to {value[1]:.2f}%"
 
 
 def _region_label(item: dict[str, object]) -> str:
@@ -1191,12 +1208,16 @@ if active_view == "Explorer":
     size_options = _selectbox_options(filters_payload["equity_size"], "size")
     style_options = _selectbox_options(filters_payload["equity_style"], "style")
     sector_options = _selectbox_options(filters_payload["sector"], "sector")
+    if int(filters_payload.get("sector_blank_count") or 0) > 0:
+        sector_options.append(BLANK_SECTOR_TOKEN)
     bond_type_options = _selectbox_options(filters_payload["bond_type"], "bond type")
     currency_options = _selectbox_options(filters_payload["currency"], "currency")
+    domicile_options = _selectbox_options(filters_payload["domicile_country"], "domicile")
     distribution_options = _selectbox_options(filters_payload["distribution_policy"], "distribution")
     issuer_options = _selectbox_options(filters_payload["issuer_top"], "issuer")
     hedged_options = ["Any hedge state", "Yes", "No"]
     page_size_options = [25, 50, 100]
+    fee_bounds = _fee_range_bounds(filters_payload)
 
     _ensure_state_value("explorer_search", "")
     _ensure_state_value("explorer_exchange", exchange_options[0], exchange_options)
@@ -1207,10 +1228,17 @@ if active_view == "Explorer":
     _ensure_state_value("explorer_sector", sector_options[0], sector_options)
     _ensure_state_value("explorer_bond_type", bond_type_options[0], bond_type_options)
     _ensure_state_value("explorer_currency", currency_options[0], currency_options)
+    _ensure_state_value("explorer_domicile", domicile_options[0], domicile_options)
     _ensure_state_value("explorer_distribution", distribution_options[0], distribution_options)
     _ensure_state_value("explorer_issuer", issuer_options[0], issuer_options)
     _ensure_state_value("explorer_hedged", hedged_options[0], hedged_options)
     _ensure_state_value("explorer_page_size", 50, page_size_options)
+    if (
+        "explorer_fee_range" not in st.session_state
+        or not isinstance(st.session_state["explorer_fee_range"], tuple)
+        or len(st.session_state["explorer_fee_range"]) != 2
+    ):
+        st.session_state["explorer_fee_range"] = fee_bounds
 
     search = st.sidebar.text_input("Search", placeholder="ISIN, fund name, ticker, issuer, benchmark", key="explorer_search")
     exchange = st.sidebar.selectbox("Exchange", exchange_options, key="explorer_exchange")
@@ -1256,6 +1284,12 @@ if active_view == "Explorer":
         key="explorer_currency",
         format_func=lambda value: _selectbox_label(value, placeholder=currency_options[0], field="currency"),
     )
+    domicile = st.sidebar.selectbox(
+        "Domicile",
+        domicile_options,
+        key="explorer_domicile",
+        format_func=lambda value: _selectbox_label(value, placeholder=domicile_options[0], field="domicile_country"),
+    )
     distribution = st.sidebar.selectbox(
         "Distribution",
         distribution_options,
@@ -1267,6 +1301,15 @@ if active_view == "Explorer":
         issuer_options,
         key="explorer_issuer",
         format_func=lambda value: _selectbox_label(value, placeholder=issuer_options[0], field="issuer"),
+    )
+    fee_range = st.sidebar.slider(
+        "TER range",
+        min_value=fee_bounds[0],
+        max_value=fee_bounds[1],
+        value=st.session_state["explorer_fee_range"],
+        step=0.01,
+        format="%.2f%%",
+        key="explorer_fee_range",
     )
     hedged = st.sidebar.selectbox("Hedged", hedged_options, key="explorer_hedged")
     page_size = int(st.sidebar.selectbox("Rows per page", page_size_options, key="explorer_page_size"))
@@ -1303,12 +1346,17 @@ if active_view == "Explorer":
         fund_params["bond_type"] = selected
     if selected := _selected_filter(currency, "Any currency"):
         fund_params["currency"] = selected
+    if selected := _selected_filter(domicile, "Any domicile"):
+        fund_params["domicile_country"] = selected
     if selected := _selected_filter(distribution, "Any distribution"):
         fund_params["distribution_policy"] = selected
     if selected := _selected_filter(issuer, "Any issuer"):
         fund_params["issuer"] = selected
     if exchange != "Any exchange":
         fund_params["venue"] = exchange
+    if fee_range != fee_bounds:
+        fund_params["fee_min"] = f"{fee_range[0]:.2f}"
+        fund_params["fee_max"] = f"{fee_range[1]:.2f}"
     if hedged == "Yes":
         fund_params["hedged"] = "true"
     elif hedged == "No":
@@ -1327,6 +1375,7 @@ if active_view == "Explorer":
         ("distribution_policy", "Distribution"),
         ("issuer", "Issuer"),
         ("currency", "Currency"),
+        ("domicile_country", "Domicile"),
     ):
         if fund_params.get(key):
             state_key = {
@@ -1339,6 +1388,7 @@ if active_view == "Explorer":
                 "distribution_policy": "explorer_distribution",
                 "issuer": "explorer_issuer",
                 "currency": "explorer_currency",
+                "domicile_country": "explorer_domicile",
             }[key]
             default_value = {
                 "explorer_asset_class": asset_type_options[0],
@@ -1350,6 +1400,7 @@ if active_view == "Explorer":
                 "explorer_distribution": distribution_options[0],
                 "explorer_issuer": issuer_options[0],
                 "explorer_currency": currency_options[0],
+                "explorer_domicile": domicile_options[0],
             }[state_key]
             active_filters.append(
                 {
@@ -1360,6 +1411,14 @@ if active_view == "Explorer":
             )
     if fund_params.get("hedged"):
         active_filters.append({"label": f"Hedged: {hedged}", "state_key": "explorer_hedged", "default": hedged_options[0]})
+    if fee_range != fee_bounds:
+        active_filters.append(
+            {
+                "label": f"TER: {_format_ter_range(fee_range)}",
+                "state_key": "explorer_fee_range",
+                "default": fee_bounds,
+            }
+        )
     if search:
         active_filters.append({"label": f"Search: {search}", "state_key": "explorer_search", "default": ""})
     _render_filter_tag_buttons(active_filters)

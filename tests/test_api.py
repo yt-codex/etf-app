@@ -140,7 +140,7 @@ def make_api_db(tmp_path) -> str:
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'taxonomy_v2', ?, '2026-03-07T00:00:00Z')
         """,
         [
-            (1, "equity", "global", "global", None, None, None, None, None, None, None, None, None, None, "unknown", 0, 0, 0, 0, 1, "GBP", "Ireland", "Accumulating", json.dumps({"rules": ["profile:benchmark_name", "hedged:GBP"]})),
+            (1, "equity", "global", "global", None, None, None, None, "technology", None, None, None, None, None, "unknown", 0, 0, 0, 0, 1, "GBP", "Ireland", "Accumulating", json.dumps({"rules": ["profile:benchmark_name", "hedged:GBP"]})),
             (2, "equity", "global", "global", None, "small", "value", None, None, None, None, None, None, None, "unknown", 0, 0, 0, 0, 0, None, "Ireland", "Accumulating", json.dumps({"rules": ["size:small", "style:value"]})),
             (3, "bond", "regional", "europe", None, None, None, None, None, None, "govt", "long", 15.0, None, "unknown", 0, 0, 0, 1, 0, None, "Ireland", "Distributing", json.dumps({"rules": ["bond_type:govt", "duration:long"]})),
             (4, "bond", "regional", "us", "United States", None, None, None, None, None, "govt", "short", 1.0, 3.0, "unknown", 1, 0, 0, 1, 0, None, "Ireland", "Accumulating", json.dumps({"rules": ["bond_type:govt", "duration:short"]})),
@@ -189,6 +189,26 @@ def test_list_funds_supports_filters_sort_and_pagination(tmp_path) -> None:
     assert len(payload["items"]) == 1
     assert payload["items"][0]["isin"] == "IE000SCVAL01"
     assert payload["items"][0]["asset_class"] == "equity"
+
+    domicile_payload = list_funds(
+        conn,
+        params={"domicile_country": "Jersey", "limit": "10", "offset": "0"},
+    )
+    assert domicile_payload["total"] == 1
+    assert domicile_payload["items"][0]["isin"] == "JE00GOLD001"
+
+    blank_sector_payload = list_funds(
+        conn,
+        params={"sector": "__blank__", "limit": "10", "offset": "0"},
+    )
+    assert blank_sector_payload["total"] == 4
+    assert all(item["sector"] is None for item in blank_sector_payload["items"])
+
+    ter_payload = list_funds(
+        conn,
+        params={"fee_min": "0.20", "fee_max": "0.25", "sort": "fee", "direction": "asc", "limit": "10", "offset": "0"},
+    )
+    assert [item["isin"] for item in ter_payload["items"]] == ["IE000LGBND01", "IE000SCVAL01"]
 
 
 def test_get_fund_detail_includes_taxonomy_evidence(tmp_path) -> None:
@@ -239,6 +259,9 @@ def test_api_endpoints_expose_filters_completeness_and_strategies(tmp_path) -> N
     assert status == "200 OK"
     assert filters_payload["asset_class"][0] == {"value": "bond", "count": 2}
     assert filters_payload["hedged_flag"]["true"] == 1
+    assert filters_payload["domicile_country"][0] == {"value": "Ireland", "count": 4}
+    assert filters_payload["sector_blank_count"] == 4
+    assert filters_payload["fee_range"] == {"min": 0.1, "max": 0.39}
 
     status, _headers, completeness_payload = call_json(app, "/api/completeness")
     assert status == "200 OK"

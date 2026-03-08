@@ -32,6 +32,7 @@ from etf_app.taxonomy import ensure_taxonomy_schema, load_universe_rows, upsert_
 MAX_PAGE_SIZE = 250
 DEFAULT_PAGE_SIZE = 50
 MAX_CUSTOM_BUCKETS = 10
+BLANK_SECTOR_TOKEN = "__blank__"
 
 FUNDS_FROM_SQL = """
 FROM instrument i
@@ -239,6 +240,9 @@ def _build_fund_filters(params: dict[str, str]) -> tuple[list[str], list[object]
     for key, clause in scalar_filters.items():
         value = params.get(key)
         if value:
+            if key == "sector" and value == BLANK_SECTOR_TOKEN:
+                clauses.append("(t.sector IS NULL OR TRIM(t.sector) = '')")
+                continue
             clauses.append(clause)
             values.append(value)
 
@@ -265,6 +269,16 @@ def _build_fund_filters(params: dict[str, str]) -> tuple[list[str], list[object]
         clauses.append("COALESCE(t.gold_flag, 0) = 1")
     elif gold is False:
         clauses.append("COALESCE(t.gold_flag, 0) = 0")
+
+    fee_min = params.get("fee_min")
+    if fee_min:
+        clauses.append("pp.ongoing_charges IS NOT NULL AND pp.ongoing_charges >= ?")
+        values.append(float(fee_min))
+
+    fee_max = params.get("fee_max")
+    if fee_max:
+        clauses.append("pp.ongoing_charges IS NOT NULL AND pp.ongoing_charges <= ?")
+        values.append(float(fee_max))
 
     return clauses, values
 
@@ -385,6 +399,24 @@ def list_filter_options(conn: sqlite3.Connection) -> dict[str, object]:
             ).fetchone()["count"]
         ),
     }
+    fee_bounds = conn.execute(
+        f"""
+        SELECT
+            MIN(pp.ongoing_charges) AS min_fee,
+            MAX(pp.ongoing_charges) AS max_fee
+        {FUNDS_FROM_SQL}
+          AND pp.ongoing_charges IS NOT NULL
+        """
+    ).fetchone()
+    blank_sector_count = int(
+        conn.execute(
+            f"""
+            SELECT COUNT(*) AS count
+            {FUNDS_FROM_SQL}
+              AND (t.sector IS NULL OR TRIM(t.sector) = '')
+            """
+        ).fetchone()["count"]
+    )
     return {
         "asset_class": _collect_counts(
             conn,
@@ -417,6 +449,11 @@ def list_filter_options(conn: sqlite3.Connection) -> dict[str, object]:
             expression="NULLIF(TRIM(l.trading_currency), '')",
             where="NULLIF(TRIM(l.trading_currency), '') IS NOT NULL",
         ),
+        "domicile_country": _collect_counts(
+            conn,
+            expression="pp.domicile_country",
+            where="pp.domicile_country IS NOT NULL AND TRIM(pp.domicile_country) <> ''",
+        ),
         "distribution_policy": _collect_counts(
             conn,
             expression="pp.distribution_policy",
@@ -429,6 +466,11 @@ def list_filter_options(conn: sqlite3.Connection) -> dict[str, object]:
             limit=25,
         ),
         "hedged_flag": hedged_counts,
+        "sector_blank_count": blank_sector_count,
+        "fee_range": {
+            "min": float(fee_bounds["min_fee"]) if fee_bounds["min_fee"] is not None else None,
+            "max": float(fee_bounds["max_fee"]) if fee_bounds["max_fee"] is not None else None,
+        },
     }
 
 
