@@ -191,7 +191,7 @@ def _b2_storage_api_info(auth_payload: Mapping[str, Any]) -> tuple[Optional[str]
         storage_api = api_info.get("storageApi")
         if isinstance(storage_api, Mapping):
             download_url = _normalized_text(storage_api.get("downloadUrl"))
-            authorization_token = _normalized_text(storage_api.get("authorizationToken"))
+            authorization_token = _normalized_text(auth_payload.get("authorizationToken"))
             if download_url is not None or authorization_token is not None:
                 return download_url, authorization_token
     return (
@@ -239,8 +239,8 @@ def _download_backblaze_private_db(
     download_base_url, authorization_token = _b2_storage_api_info(auth_payload)
     if download_base_url is None or authorization_token is None:
         raise RuntimeError(
-            "Backblaze B2 authorize response did not include storage download credentials "
-            "(`apiInfo.storageApi.downloadUrl` and `apiInfo.storageApi.authorizationToken`)."
+            "Backblaze B2 authorize response did not include download credentials "
+            "(`apiInfo.storageApi.downloadUrl` and top-level `authorizationToken`)."
         )
 
     quoted_bucket = quote(bucket, safe="")

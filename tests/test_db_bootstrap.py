@@ -149,9 +149,9 @@ def test_resolve_db_path_downloads_from_private_backblaze_bucket(
             return _FakeResponse(
                 b"",
                 json_payload={
+                    "authorizationToken": "auth-token",
                     "apiInfo": {
                         "storageApi": {
-                            "authorizationToken": "auth-token",
                             "downloadUrl": "https://download.backblazeb2.com",
                         }
                     }
