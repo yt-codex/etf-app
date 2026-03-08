@@ -147,6 +147,27 @@ st.markdown(
     .chip-row { display: flex; flex-wrap: wrap; gap: 0.5rem; margin: 0.35rem 0 0.15rem 0; }
     .chip { display: inline-flex; align-items: center; border-radius: 999px; padding: 0.34rem 0.74rem; font-size: 0.82rem; font-weight: 600; background: rgba(33,69,63,0.08); border: 1px solid rgba(33,69,63,0.14); color: var(--moss); }
     .chip.accent { background: rgba(189,108,70,0.12); border-color: rgba(189,108,70,0.18); color: #955334; }
+    .control-label {
+        font-size: 0.82rem;
+        font-weight: 600;
+        color: var(--ink);
+        margin: 0 0 0.45rem 0;
+    }
+    .filter-tag {
+        display: flex;
+        align-items: center;
+        min-height: 2.8rem;
+        border-radius: 999px;
+        padding: 0.32rem 1rem;
+        background: rgba(33,69,63,0.08);
+        border: 1px solid rgba(33,69,63,0.14);
+        color: var(--moss);
+        font-size: 0.9rem;
+        font-weight: 600;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
     .detail-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.7rem; margin-top: 0.95rem; }
     .detail-tile { background: rgba(246,241,232,0.86); border: 1px solid var(--line); border-radius: 16px; padding: 0.72rem 0.82rem; }
     .detail-tile span { display: block; font-size: 0.74rem; letter-spacing: 0.1em; text-transform: uppercase; color: #7c8a85; margin-bottom: 0.35rem; font-weight: 600; }
@@ -727,6 +748,10 @@ def _collect_custom_bucket_inputs() -> tuple[list[dict[str, object]], float, lis
         _ensure_state_value(bucket_key, default_bucket, bucket_options)
         _ensure_state_value(weight_key, default_weight)
 
+        label_cols = st.columns([1.58, 0.74, 0.22], gap="small")
+        label_cols[0].markdown(f"<div class='control-label'>Bucket {idx + 1}</div>", unsafe_allow_html=True)
+        label_cols[1].markdown(f"<div class='control-label'>Target weight {idx + 1}</div>", unsafe_allow_html=True)
+
         row_cols = st.columns([1.58, 0.74, 0.22], gap="small")
         with row_cols[0]:
             bucket_name = st.selectbox(
@@ -734,6 +759,7 @@ def _collect_custom_bucket_inputs() -> tuple[list[dict[str, object]], float, lis
                 bucket_options,
                 key=bucket_key,
                 format_func=_custom_bucket_picker_label,
+                label_visibility="collapsed",
             )
         with row_cols[1]:
             target_weight = st.number_input(
@@ -743,13 +769,14 @@ def _collect_custom_bucket_inputs() -> tuple[list[dict[str, object]], float, lis
                 step=1.0,
                 format="%.1f",
                 key=weight_key,
+                label_visibility="collapsed",
             )
         with row_cols[2]:
-            st.markdown("<div style='height:1.9rem'></div>", unsafe_allow_html=True)
             st.button(
-                "Remove",
+                "X",
                 key=f"custom_bucket_remove_{row_id}",
                 help="Remove bucket",
+                use_container_width=True,
                 disabled=len(row_ids) <= 1,
                 on_click=_remove_custom_bucket_row,
                 args=(row_id,),
@@ -779,17 +806,27 @@ def _render_filter_tag_buttons(tags: list[dict[str, object]]) -> None:
     if not tags:
         _render_chip_row(["All active UCITS ETFs"], accent_first=True)
         return
-    for row_index, chunk in enumerate(_chunked(tags, 3)):
-        cols = st.columns(len(chunk), gap="small")
-        for col, tag in zip(cols, chunk):
-            with col:
+    for row_index, chunk in enumerate(_chunked(tags, 4)):
+        width_spec: list[float] = []
+        for tag in chunk:
+            label_width = min(4.8, max(1.8, len(str(tag["label"])) * 0.11))
+            width_spec.extend([label_width, 0.32])
+        width_spec.append(1.0)
+        cols = st.columns(width_spec, gap="small")
+        col_index = 0
+        for tag in chunk:
+            with cols[col_index]:
+                st.markdown(f"<div class='filter-tag'>{_escape(tag['label'])}</div>", unsafe_allow_html=True)
+            with cols[col_index + 1]:
                 st.button(
-                    f"{tag['label']} x",
+                    "X",
                     key=f"explorer_filter_tag_{row_index}_{tag['state_key']}",
+                    help=f"Remove {tag['label']}",
                     use_container_width=True,
                     on_click=_reset_explorer_filter,
                     args=(str(tag["state_key"]), tag["default"]),
                 )
+            col_index += 2
 
 
 def _render_strategy_bucket_table(strategy: dict[str, object]) -> list[dict[str, object]]:
