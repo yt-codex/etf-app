@@ -144,13 +144,17 @@ def test_resolve_db_path_downloads_from_private_backblaze_bucket(
 
     def _fake_get(url: str, **kwargs) -> _FakeResponse:
         calls.append(url)
-        if url.endswith("/b2api/v3/b2_authorize_account"):
+        if url.endswith("/b2api/v4/b2_authorize_account"):
             assert kwargs["auth"] == ("key-id", "app-key")
             return _FakeResponse(
                 b"",
                 json_payload={
-                    "authorizationToken": "auth-token",
-                    "downloadUrl": "https://download.backblazeb2.com",
+                    "apiInfo": {
+                        "storageApi": {
+                            "authorizationToken": "auth-token",
+                            "downloadUrl": "https://download.backblazeb2.com",
+                        }
+                    }
                 },
             )
         assert kwargs["headers"]["Authorization"] == "auth-token"
@@ -173,7 +177,7 @@ def test_resolve_db_path_downloads_from_private_backblaze_bucket(
     )
 
     assert calls == [
-        "https://api.backblazeb2.com/b2api/v3/b2_authorize_account",
+        "https://api.backblazeb2.com/b2api/v4/b2_authorize_account",
         "https://download.backblazeb2.com/file/atlas-private/stage1_etf.db",
     ]
     assert resolved.read_bytes() == payload

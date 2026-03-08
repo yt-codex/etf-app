@@ -185,6 +185,21 @@ def _download_remote_db(
         raise RuntimeError(f"Failed to download the ETF database from `{url}`: {exc}") from exc
 
 
+def _b2_storage_api_info(auth_payload: Mapping[str, Any]) -> tuple[Optional[str], Optional[str]]:
+    api_info = auth_payload.get("apiInfo")
+    if isinstance(api_info, Mapping):
+        storage_api = api_info.get("storageApi")
+        if isinstance(storage_api, Mapping):
+            download_url = _normalized_text(storage_api.get("downloadUrl"))
+            authorization_token = _normalized_text(storage_api.get("authorizationToken"))
+            if download_url is not None or authorization_token is not None:
+                return download_url, authorization_token
+    return (
+        _normalized_text(auth_payload.get("downloadUrl")),
+        _normalized_text(auth_payload.get("authorizationToken")),
+    )
+
+
 def _b2_setting(
     key: str,
     *,
@@ -208,7 +223,7 @@ def _download_backblaze_private_db(
     version: Optional[str],
     sha256: Optional[str],
 ) -> Path:
-    auth_url = "https://api.backblazeb2.com/b2api/v3/b2_authorize_account"
+    auth_url = "https://api.backblazeb2.com/b2api/v4/b2_authorize_account"
     try:
         auth_response = requests.get(
             auth_url,
@@ -221,10 +236,12 @@ def _download_backblaze_private_db(
     except (requests.RequestException, ValueError) as exc:
         raise RuntimeError(f"Failed to authorize Backblaze B2 application key: {exc}") from exc
 
-    download_base_url = _normalized_text(auth_payload.get("downloadUrl"))
-    authorization_token = _normalized_text(auth_payload.get("authorizationToken"))
+    download_base_url, authorization_token = _b2_storage_api_info(auth_payload)
     if download_base_url is None or authorization_token is None:
-        raise RuntimeError("Backblaze B2 authorize response did not include `downloadUrl` and `authorizationToken`.")
+        raise RuntimeError(
+            "Backblaze B2 authorize response did not include storage download credentials "
+            "(`apiInfo.storageApi.downloadUrl` and `apiInfo.storageApi.authorizationToken`)."
+        )
 
     quoted_bucket = quote(bucket, safe="")
     quoted_file_name = quote(file_name, safe="/")
