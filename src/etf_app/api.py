@@ -354,13 +354,17 @@ def _collect_counts(
     expression: str,
     where: str,
     limit: Optional[int] = None,
+    alphabetical: bool = False,
 ) -> list[dict[str, object]]:
+    order_sql = "ORDER BY value COLLATE NOCASE ASC"
+    if not alphabetical:
+        order_sql = "ORDER BY count DESC, value"
     sql = f"""
         SELECT {expression} AS value, COUNT(*) AS count
         {FUNDS_FROM_SQL}
           AND {where}
         GROUP BY {expression}
-        ORDER BY count DESC, value
+        {order_sql}
     """
     if limit is not None:
         sql = f"{sql}\nLIMIT {int(limit)}"
@@ -431,7 +435,12 @@ def list_filter_options(conn: sqlite3.Connection) -> dict[str, object]:
         "equity_size": _collect_counts(conn, expression="t.equity_size", where="t.equity_size IS NOT NULL"),
         "equity_style": _collect_counts(conn, expression="t.equity_style", where="t.equity_style IS NOT NULL"),
         "factor": _collect_counts(conn, expression="t.factor", where="t.factor IS NOT NULL"),
-        "sector": _collect_counts(conn, expression="t.sector", where="t.sector IS NOT NULL"),
+        "sector": _collect_counts(
+            conn,
+            expression="t.sector",
+            where="t.sector IS NOT NULL",
+            alphabetical=True,
+        ),
         "theme": _collect_counts(conn, expression="t.theme", where="t.theme IS NOT NULL"),
         "bond_type": _collect_counts(
             conn,
@@ -463,6 +472,7 @@ def list_filter_options(conn: sqlite3.Connection) -> dict[str, object]:
             conn,
             expression="COALESCE(iss.normalized_name, iss.issuer_name, 'Unknown')",
             where="COALESCE(iss.normalized_name, iss.issuer_name, 'Unknown') <> ''",
+            alphabetical=True,
         ),
         "hedged_flag": hedged_counts,
         "sector_blank_count": blank_sector_count,

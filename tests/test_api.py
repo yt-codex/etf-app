@@ -260,6 +260,12 @@ def test_api_endpoints_expose_filters_completeness_and_strategies(tmp_path) -> N
     assert filters_payload["asset_class"][0] == {"value": "bond", "count": 2}
     assert filters_payload["hedged_flag"]["true"] == 1
     assert filters_payload["domicile_country"][0] == {"value": "Ireland", "count": 4}
+    assert [item["value"] for item in filters_payload["sector"]] == ["technology"]
+    assert [item["value"] for item in filters_payload["issuer_top"]] == [
+        "State Street / SPDR",
+        "Vanguard",
+        "WisdomTree",
+    ]
     assert filters_payload["sector_blank_count"] == 4
     assert filters_payload["fee_range"] == {"min": 0.1, "max": 0.39}
 
