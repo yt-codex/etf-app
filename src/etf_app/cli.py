@@ -5,6 +5,7 @@ import sqlite3
 from pathlib import Path
 
 from etf_app.api import run_api_server
+from etf_app.deploy_artifact import build_deploy_artifact
 from etf_app.deploy_db import build_deploy_db
 from etf_app.ft_enrich import run_ft_metadata_backfill
 from etf_app import listing_hygiene, listing_ingest, universe_refine
@@ -159,6 +160,104 @@ def build_parser() -> argparse.ArgumentParser:
         help="Path to output deploy SQLite DB",
     )
 
+    refresh_deploy = subparsers.add_parser(
+        "refresh-deploy-artifact",
+        help="Run the refresh/enrichment pipeline and produce a slim deploy DB, .gz, and manifest",
+    )
+    refresh_deploy.add_argument("--db-path", default="stage1_etf.db", help="Path to source SQLite DB")
+    refresh_deploy.add_argument(
+        "--artifacts-dir",
+        default="artifacts",
+        help="Directory for generated completeness and gap artifacts",
+    )
+    refresh_deploy.add_argument(
+        "--deploy-db-path",
+        default="deploy_stage1_etf.db",
+        help="Path to output deploy SQLite DB",
+    )
+    refresh_deploy.add_argument(
+        "--deploy-gzip-path",
+        default="deploy_stage1_etf.db.gz",
+        help="Path to output compressed deploy artifact",
+    )
+    refresh_deploy.add_argument(
+        "--manifest-path",
+        default="artifacts/deploy_manifest.json",
+        help="Path to JSON manifest describing the deploy artifact",
+    )
+    refresh_deploy.add_argument(
+        "--version-label",
+        default="",
+        help="Optional version label written into the manifest (defaults to the current UTC date)",
+    )
+    refresh_deploy.add_argument(
+        "--skip-refresh",
+        action="store_true",
+        help="Skip listing refresh and rebuild steps and operate on the existing source DB",
+    )
+    refresh_deploy.add_argument(
+        "--skip-cboe",
+        action="store_true",
+        help="Skip optional Cboe ingestion during the refresh step",
+    )
+    refresh_deploy.add_argument(
+        "--skip-ft",
+        action="store_true",
+        help="Skip the FT metadata backfill sweep",
+    )
+    refresh_deploy.add_argument(
+        "--ft-limit",
+        type=int,
+        default=0,
+        help="Maximum FT targets to attempt (0 means all matching targets)",
+    )
+    refresh_deploy.add_argument(
+        "--ft-venue",
+        choices=["XLON", "XETR", "ALL"],
+        default="ALL",
+        help="Primary venue scope for FT tearsheet resolution",
+    )
+    refresh_deploy.add_argument(
+        "--ft-sleep-seconds",
+        type=float,
+        default=0.0,
+        help="Optional delay between resolved FT fetches",
+    )
+    refresh_deploy.add_argument(
+        "--ft-commit-every",
+        type=int,
+        default=100,
+        help="Flush FT metadata changes every N resolved snapshots",
+    )
+    refresh_deploy.add_argument(
+        "--skip-issuer-fees",
+        action="store_true",
+        help="Skip issuer-fee backfills before the completeness and deploy steps",
+    )
+    refresh_deploy.add_argument(
+        "--issuer-fee-source",
+        action="append",
+        default=[],
+        help="Optional issuer-fee source filter; repeatable",
+    )
+    refresh_deploy.add_argument(
+        "--venue",
+        choices=["XLON", "XETR", "ALL"],
+        default="ALL",
+        help="Venue scope used for completeness and deploy smoke tests",
+    )
+    refresh_deploy.add_argument(
+        "--preferred-currency-order",
+        default="USD,EUR,GBP",
+        help="Currency sort order for completeness and smoke tests",
+    )
+    refresh_deploy.add_argument(
+        "--top-n",
+        type=int,
+        default=5,
+        help="Top candidates per bucket for completeness and smoke tests",
+    )
+
     serve_api = subparsers.add_parser(
         "serve-api",
         help="Serve a thin JSON API over the SQLite ETF database",
@@ -212,30 +311,37 @@ def _artifact_path(root: str, filename: str) -> str:
     return str(Path(root) / filename)
 
 
-def run_patch_data(db_path: str, artifacts_dir: str) -> int:
+def run_patch_data(db_path: str, artifacts_dir: str, *, emit_completeness: bool = True) -> int:
     primary_csv = _artifact_path(artifacts_dir, "primary_listings.csv")
     universe_csv = _artifact_path(artifacts_dir, "universe_mvp.csv")
 
     listing_hygiene.main(["--db-path", db_path, "--output-csv", primary_csv])
     universe_refine.main(["--db-path", db_path, "--output-csv", universe_csv])
-    run_completeness_report(
-        db_path=db_path,
-        artifacts_dir=artifacts_dir,
-        venue="ALL",
-        preferred_currency_order="USD,EUR,GBP",
-        top_n=5,
-        allow_missing_fees=False,
-        allow_missing_currency=False,
-    )
+    if emit_completeness:
+        run_completeness_report(
+            db_path=db_path,
+            artifacts_dir=artifacts_dir,
+            venue="ALL",
+            preferred_currency_order="USD,EUR,GBP",
+            top_n=5,
+            allow_missing_fees=False,
+            allow_missing_currency=False,
+        )
     return 0
 
 
-def run_stage1_refresh(db_path: str, artifacts_dir: str, skip_cboe: bool) -> int:
+def run_stage1_refresh(
+    db_path: str,
+    artifacts_dir: str,
+    skip_cboe: bool,
+    *,
+    emit_completeness: bool = True,
+) -> int:
     ingest_args = ["--db-path", db_path]
     if skip_cboe:
         ingest_args.append("--skip-cboe")
     listing_ingest.main(ingest_args)
-    return run_patch_data(db_path, artifacts_dir)
+    return run_patch_data(db_path, artifacts_dir, emit_completeness=emit_completeness)
 
 
 def run_classify_taxonomy(db_path: str) -> int:
@@ -339,6 +445,93 @@ def run_build_deploy_db(db_path: str, output_path: str) -> int:
     return 0
 
 
+def run_refresh_deploy_artifact(
+    db_path: str,
+    artifacts_dir: str,
+    deploy_db_path: str,
+    deploy_gzip_path: str,
+    manifest_path: str,
+    version_label: str,
+    skip_refresh: bool,
+    skip_cboe: bool,
+    skip_ft: bool,
+    ft_limit: int,
+    ft_venue: str,
+    ft_sleep_seconds: float,
+    ft_commit_every: int,
+    skip_issuer_fees: bool,
+    issuer_fee_sources: list[str],
+    venue: str,
+    preferred_currency_order: str,
+    top_n: int,
+) -> int:
+    if not skip_refresh:
+        run_stage1_refresh(
+            db_path,
+            artifacts_dir,
+            skip_cboe,
+            emit_completeness=False,
+        )
+    else:
+        print("refresh-deploy-artifact: skipping listing refresh")
+
+    if not skip_ft:
+        run_ft_enrichment(
+            db_path=db_path,
+            limit=ft_limit,
+            venue=ft_venue,
+            sleep_seconds=ft_sleep_seconds,
+            tickers=[],
+            isins=[],
+            commit_every=ft_commit_every,
+        )
+    else:
+        print("refresh-deploy-artifact: skipping FT metadata backfill")
+
+    if not skip_issuer_fees:
+        run_issuer_fee_enrichment(db_path=db_path, source=issuer_fee_sources)
+    else:
+        print("refresh-deploy-artifact: skipping issuer fee backfill")
+
+    completeness_path = generate_completeness_report(
+        db_path=db_path,
+        artifacts_dir=artifacts_dir,
+        venue=venue,
+        preferred_currency_order=preferred_currency_order,
+        top_n=top_n,
+        allow_missing_fees=False,
+        allow_missing_currency=False,
+    )
+    stats = build_deploy_artifact(
+        source_db_path=db_path,
+        deploy_db_path=deploy_db_path,
+        deploy_gzip_path=deploy_gzip_path,
+        manifest_path=manifest_path,
+        completeness_report_path=str(completeness_path),
+        version_label=version_label,
+        venue=venue,
+        preferred_currency_order=preferred_currency_order,
+        top_n=top_n,
+    )
+    print(
+        "deploy artifact ready: "
+        f"version={stats.version_label} "
+        f"deploy_db={stats.deploy_db.output_path} "
+        f"deploy_db_sha256={stats.deploy_gzip.source_sha256} "
+        f"deploy_gzip={stats.deploy_gzip.gzip_path} "
+        f"deploy_gzip_sha256={stats.deploy_gzip.gzip_sha256} "
+        f"manifest={stats.manifest_path}"
+    )
+    print(
+        "deploy smoke tests: "
+        f"explorer_total={stats.smoke_tests.explorer_total} "
+        f"strategy_gold_rows={stats.smoke_tests.strategy_gold_row_count} "
+        f"custom_rows={stats.smoke_tests.custom_row_count} "
+        f"strict_candidates={stats.smoke_tests.completeness_strict_candidates}"
+    )
+    return 0
+
+
 def run_issuer_normalization(db_path: str, only_missing_fees: bool) -> int:
     conn = sqlite3.connect(str(Path(db_path)))
     conn.row_factory = sqlite3.Row
@@ -426,6 +619,27 @@ def main(argv: list[str] | None = None) -> int:
         )
     if args.command == "build-deploy-db":
         return run_build_deploy_db(args.db_path, args.output_path)
+    if args.command == "refresh-deploy-artifact":
+        return run_refresh_deploy_artifact(
+            args.db_path,
+            args.artifacts_dir,
+            args.deploy_db_path,
+            args.deploy_gzip_path,
+            args.manifest_path,
+            args.version_label,
+            args.skip_refresh,
+            args.skip_cboe,
+            args.skip_ft,
+            args.ft_limit,
+            args.ft_venue,
+            args.ft_sleep_seconds,
+            args.ft_commit_every,
+            args.skip_issuer_fees,
+            args.issuer_fee_source,
+            args.venue,
+            args.preferred_currency_order,
+            args.top_n,
+        )
     if args.command == "serve-api":
         return run_api(
             args.db_path,

@@ -74,7 +74,28 @@ Build a slim deploy database for hosting:
 etf-pipeline build-deploy-db --db-path stage1_etf.db --output-path deploy_stage1_etf.db
 ```
 
-Compress the deploy database for hosting:
+Run the full refresh, FT backfill, completeness, deploy export, gzip, and smoke-test flow in one command:
+
+```powershell
+etf-pipeline refresh-deploy-artifact --db-path stage1_etf.db --version-label deploy-db-2026-03-09
+```
+
+That command writes:
+
+- `artifacts/completeness_report.json`
+- `artifacts/gap_report.json`
+- `artifacts/gap_report.csv`
+- `artifacts/deploy_manifest.json`
+- `deploy_stage1_etf.db`
+- `deploy_stage1_etf.db.gz`
+
+If you want to package the current DB without refreshing listings again, use:
+
+```powershell
+etf-pipeline refresh-deploy-artifact --db-path stage1_etf.db --skip-refresh --skip-ft --skip-issuer-fees
+```
+
+Manual gzip of the deploy database is still available:
 
 ```powershell
 @'
@@ -88,6 +109,13 @@ with source.open("rb") as src, gzip.open(target, "wb", compresslevel=9) as dst:
     shutil.copyfileobj(src, dst)
 '@ | python -
 ```
+
+The deploy manifest records:
+
+- source and deploy DB sizes
+- SHA-256 for the deploy `.db` and `.gz`
+- selected completeness coverage metrics
+- smoke-test results for explorer, strategies, custom allocation, and coverage
 
 For Streamlit Cloud or any environment where the SQLite file is not checked into the repo, the recommended path is:
 
