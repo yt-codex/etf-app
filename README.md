@@ -105,24 +105,11 @@ db_sha256 = "replace-with-the-sha256-of-deploy_stage1_etf.db"
 
 The app will download the `.gz` asset once, decompress it into the local cache, verify the SHA against the decompressed SQLite file, and then open that cached `.db`.
 
-Private Backblaze B2 buckets are still supported if needed. Provide a bucket-scoped read key in Streamlit secrets:
-
-```toml
-b2_key_id = "your-key-id"
-b2_application_key = "your-read-only-app-key"
-b2_bucket = "your-private-bucket-name"
-b2_file_name = "stage1_etf.db"
-db_version = "2026-03-09"
-db_sha256 = "replace-with-the-file-sha256"
-```
-
 Optional deployment settings:
 
 - `db_cache_name`: override the cached filename on the server
 - `db_cache_dir`: override the local cache directory on the server
 - `db_path`: keep using an already-mounted local file if your host provides one
-
-If both `db_url` and Backblaze B2 secrets are present, `db_url` wins.
 
 Legacy command names (`patch-data`, `stage1-refresh`, `classify-taxonomy`, `recommend-strategies`) still work.
 

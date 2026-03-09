@@ -6,7 +6,6 @@ import json
 import tempfile
 from pathlib import Path
 from typing import Any, Mapping, Optional
-from urllib.parse import quote
 
 import requests
 
@@ -212,94 +211,6 @@ def _download_remote_db(
         raise RuntimeError(f"Failed to download the ETF database from `{url}`: {exc}") from exc
 
 
-def _b2_storage_api_info(auth_payload: Mapping[str, Any]) -> tuple[Optional[str], Optional[str]]:
-    api_info = auth_payload.get("apiInfo")
-    if isinstance(api_info, Mapping):
-        storage_api = api_info.get("storageApi")
-        if isinstance(storage_api, Mapping):
-            download_url = _normalized_text(storage_api.get("downloadUrl"))
-            authorization_token = _normalized_text(auth_payload.get("authorizationToken"))
-            if download_url is not None or authorization_token is not None:
-                return download_url, authorization_token
-    return (
-        _normalized_text(auth_payload.get("downloadUrl")),
-        _normalized_text(auth_payload.get("authorizationToken")),
-    )
-
-
-def _b2_setting(
-    key: str,
-    *,
-    secrets: Optional[Mapping[str, Any]],
-    env: Optional[Mapping[str, str]],
-) -> Optional[str]:
-    secret_key = f"b2_{key}"
-    secret_value = _mapping_get(secrets, secret_key)
-    if secret_value is not None:
-        return secret_value
-    return _mapping_get(env, f"B2_{key.upper()}")
-
-
-def _download_backblaze_private_db(
-    *,
-    key_id: str,
-    application_key: str,
-    bucket: str,
-    file_name: str,
-    target_path: Path,
-    version: Optional[str],
-    sha256: Optional[str],
-) -> Path:
-    auth_url = "https://api.backblazeb2.com/b2api/v4/b2_authorize_account"
-    try:
-        auth_response = requests.get(
-            auth_url,
-            auth=(key_id, application_key),
-            timeout=(20, 60),
-            headers={"User-Agent": "UCITS-ETF-Atlas/1.0"},
-        )
-        auth_response.raise_for_status()
-        auth_payload = auth_response.json()
-    except (requests.RequestException, ValueError) as exc:
-        raise RuntimeError(f"Failed to authorize Backblaze B2 application key: {exc}") from exc
-
-    download_base_url, authorization_token = _b2_storage_api_info(auth_payload)
-    if download_base_url is None or authorization_token is None:
-        raise RuntimeError(
-            "Backblaze B2 authorize response did not include download credentials "
-            "(`apiInfo.storageApi.downloadUrl` and top-level `authorizationToken`)."
-        )
-
-    quoted_bucket = quote(bucket, safe="")
-    quoted_file_name = quote(file_name, safe="/")
-    source_key = f"b2://{bucket}/{file_name}"
-    download_url = f"{download_base_url}/file/{quoted_bucket}/{quoted_file_name}"
-    try:
-        with requests.get(
-            download_url,
-            stream=True,
-            timeout=(20, 300),
-            headers={
-                "Authorization": authorization_token,
-                "User-Agent": "UCITS-ETF-Atlas/1.0",
-            },
-        ) as response:
-            return _persist_download_stream(
-                stream_response=response,
-                target_path=target_path,
-                version=version,
-                sha256=sha256,
-                metadata={
-                    "source_key": source_key,
-                    "b2_bucket": bucket,
-                    "b2_file_name": file_name,
-                },
-                source_label=source_key,
-            )
-    except requests.RequestException as exc:
-        raise RuntimeError(f"Failed to download the ETF database from `{source_key}`: {exc}") from exc
-
-
 def resolve_db_path(
     *,
     default_path: str = DEFAULT_DB_FILENAME,
@@ -328,34 +239,7 @@ def resolve_db_path(
             return target_path
         return _download_remote_db(url=db_url, target_path=target_path, version=db_version, sha256=db_sha256)
 
-    b2_key_id = _b2_setting("key_id", secrets=secrets, env=env)
-    b2_application_key = _b2_setting("application_key", secrets=secrets, env=env)
-    b2_bucket = _b2_setting("bucket", secrets=secrets, env=env)
-    b2_file_name = _b2_setting("file_name", secrets=secrets, env=env) or Path(default_path).name
-    if b2_key_id and b2_application_key and b2_bucket:
-        source_key = f"b2://{b2_bucket}/{b2_file_name}"
-        target_path = _cache_target_path(
-            url=source_key,
-            default_name=Path(b2_file_name).name,
-            secrets=secrets,
-            env=env,
-            cache_root=cache_root,
-        )
-        metadata = _load_metadata(_metadata_path(target_path))
-        if target_path.exists() and _metadata_matches(metadata, source_key=source_key, version=db_version, sha256=db_sha256):
-            return target_path
-        return _download_backblaze_private_db(
-            key_id=b2_key_id,
-            application_key=b2_application_key,
-            bucket=b2_bucket,
-            file_name=b2_file_name,
-            target_path=target_path,
-            version=db_version,
-            sha256=db_sha256,
-        )
-
     raise FileNotFoundError(
         f"Database not found at `{local_candidate}`. "
-        "Set `ETF_APP_DB_PATH`, configure `db_url` / `ETF_APP_DB_URL`, "
-        "or provide Backblaze B2 settings (`b2_key_id`, `b2_application_key`, `b2_bucket`)."
+        "Set `ETF_APP_DB_PATH` or configure `db_url` / `ETF_APP_DB_URL`."
     )

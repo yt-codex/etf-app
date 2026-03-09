@@ -205,60 +205,11 @@ def test_resolve_db_path_reuses_cached_decompressed_gzip_db(
     assert call_count == 1
 
 
-def test_resolve_db_path_downloads_from_private_backblaze_bucket(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    payload = b"private-b2-db"
-    expected_sha = hashlib.sha256(payload).hexdigest()
-    calls: list[str] = []
-
-    def _fake_get(url: str, **kwargs) -> _FakeResponse:
-        calls.append(url)
-        if url.endswith("/b2api/v4/b2_authorize_account"):
-            assert kwargs["auth"] == ("key-id", "app-key")
-            return _FakeResponse(
-                b"",
-                json_payload={
-                    "authorizationToken": "auth-token",
-                    "apiInfo": {
-                        "storageApi": {
-                            "downloadUrl": "https://download.backblazeb2.com",
-                        }
-                    }
-                },
-            )
-        assert kwargs["headers"]["Authorization"] == "auth-token"
-        return _FakeResponse(payload)
-
-    monkeypatch.setattr("etf_app.db_bootstrap.requests.get", _fake_get)
-
-    resolved = resolve_db_path(
-        default_path="missing-stage1_etf.db",
-        secrets={
-            "b2_key_id": "key-id",
-            "b2_application_key": "app-key",
-            "b2_bucket": "atlas-private",
-            "b2_file_name": "stage1_etf.db",
-            "db_version": "2026-03-09",
-            "db_sha256": expected_sha,
-        },
-        env={},
-        cache_root=tmp_path / "cache",
-    )
-
-    assert calls == [
-        "https://api.backblazeb2.com/b2api/v4/b2_authorize_account",
-        "https://download.backblazeb2.com/file/atlas-private/stage1_etf.db",
-    ]
-    assert resolved.read_bytes() == payload
-
-    metadata_path = Path(f"{resolved}.meta.json")
-    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
-    assert metadata == {
-        "b2_bucket": "atlas-private",
-        "b2_file_name": "stage1_etf.db",
-        "sha256": expected_sha,
-        "source_key": "b2://atlas-private/stage1_etf.db",
-        "version": "2026-03-09",
-    }
+def test_resolve_db_path_raises_without_local_or_remote_settings(tmp_path: Path) -> None:
+    with pytest.raises(FileNotFoundError, match="Set `ETF_APP_DB_PATH` or configure `db_url` / `ETF_APP_DB_URL`"):
+        resolve_db_path(
+            default_path="missing-stage1_etf.db",
+            secrets={},
+            env={},
+            cache_root=tmp_path / "cache",
+        )

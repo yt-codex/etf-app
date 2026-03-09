@@ -302,8 +302,6 @@ def load_strategy_payload(
     venue: str,
     preferred_currency_order: str,
     strategy_name: str,
-    allow_missing_fees: bool,
-    allow_missing_currency: bool,
 ) -> dict[str, object]:
     return _with_conn(
         db_path,
@@ -311,8 +309,8 @@ def load_strategy_payload(
         venue=venue,
         preferred_currency_order=preferred_currency_order,
         top_n=STRATEGY_UI_TOP_N,
-        allow_missing_fees=allow_missing_fees,
-        allow_missing_currency=allow_missing_currency,
+        allow_missing_fees=False,
+        allow_missing_currency=False,
         strategy_name=strategy_name,
     )
 
@@ -323,8 +321,6 @@ def load_custom_strategy_payload(
     venue: str,
     preferred_currency_order: str,
     bucket_items: tuple[tuple[str, float], ...],
-    allow_missing_fees: bool,
-    allow_missing_currency: bool,
 ) -> dict[str, object]:
     return _with_conn(
         db_path,
@@ -332,8 +328,8 @@ def load_custom_strategy_payload(
         venue=venue,
         preferred_currency_order=preferred_currency_order,
         top_n=STRATEGY_UI_TOP_N,
-        allow_missing_fees=allow_missing_fees,
-        allow_missing_currency=allow_missing_currency,
+        allow_missing_fees=False,
+        allow_missing_currency=False,
         buckets=[
             {"bucket_name": bucket_name, "target_weight": float(target_weight)}
             for bucket_name, target_weight in bucket_items
@@ -457,10 +453,6 @@ def _display_bond_value(value: Optional[str], *, is_bond: bool) -> str:
     if not is_bond:
         return NOT_APPLICABLE_DISPLAY
     return _display_value(value)
-
-
-def _compact_values(values: list[str]) -> list[str]:
-    return [value for value in values if value]
 
 
 def _asset_key(item: dict[str, object]) -> Optional[str]:
@@ -1468,16 +1460,12 @@ elif active_view == "Strategies":
     strategy_exchange_label = ctrl_one.selectbox("Exchange scope", list(strategy_exchange_options.keys()), key="strategy_venue")
     strategy_venue = strategy_exchange_options[strategy_exchange_label]
     preferred_currency_order = ctrl_two.text_input("Preferred trading currencies", value="USD,EUR,GBP", key="strategy_currency_order")
-    allow_missing_fees = False
-    allow_missing_currency = False
 
     strategy_payload = load_strategy_payload(
         db_path,
         strategy_venue,
         preferred_currency_order,
         selected_strategy_name,
-        allow_missing_fees,
-        allow_missing_currency,
     )
     if not strategy_payload["strategies"]:
         st.info("This strategy is not available under the current constraints.")
@@ -1569,8 +1557,6 @@ elif active_view == "Custom":
                 (str(row["bucket_name"]), float(row["target_weight"]))
                 for row in custom_rows
             ),
-            False,
-            False,
         )
         custom_strategy = custom_payload["strategies"][0]
         st.caption("Funds available are unbounded in the UI: each sleeve includes every ranked candidate returned by the final bucket filter.")
