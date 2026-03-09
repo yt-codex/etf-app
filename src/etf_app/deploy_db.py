@@ -28,6 +28,8 @@ CURRENT_COST_QUALITY_FLAGS = (
     "lse_ter_ok",
 )
 
+STRATEGY_EXCEPTION_VENUES = ("XLON", "XETR")
+
 
 @dataclass(frozen=True)
 class DeployDbStats:
@@ -115,13 +117,33 @@ def build_deploy_db(*, source_db_path: str, output_db_path: str) -> DeployDbStat
         copied_tables = {table_name: _copy_table_schema(source_conn, target_conn, table_name) for table_name in RUNTIME_TABLES}
 
         target_conn.execute("ATTACH DATABASE ? AS source_db", (str(source_path),))
+        venue_placeholders = ",".join("?" for _ in STRATEGY_EXCEPTION_VENUES)
         target_conn.execute(
-            """
+            f"""
             CREATE TEMP TABLE selected_instrument_ids AS
-            SELECT instrument_id
-            FROM source_db.instrument
-            WHERE COALESCE(universe_mvp_flag, 0) = 1
-            """
+            SELECT DISTINCT instrument_id
+            FROM (
+                SELECT instrument_id
+                FROM source_db.instrument
+                WHERE COALESCE(universe_mvp_flag, 0) = 1
+
+                UNION
+
+                SELECT i.instrument_id
+                FROM source_db.instrument i
+                JOIN source_db.listing l
+                  ON l.instrument_id = i.instrument_id
+                 AND COALESCE(l.primary_flag, 0) = 1
+                 AND COALESCE(l.status, 'active') = 'active'
+                WHERE COALESCE(i.universe_mvp_flag, 0) = 0
+                  AND l.venue_mic IN ({venue_placeholders})
+                  AND (
+                      UPPER(i.instrument_name) LIKE '%GOLD%'
+                      OR UPPER(i.instrument_name) LIKE '%BULLION%'
+                  )
+            )
+            """,
+            STRATEGY_EXCEPTION_VENUES,
         )
         target_conn.execute("CREATE INDEX temp.idx_selected_instrument_ids ON selected_instrument_ids(instrument_id)")
         target_conn.execute(
@@ -129,7 +151,7 @@ def build_deploy_db(*, source_db_path: str, output_db_path: str) -> DeployDbStat
             CREATE TEMP TABLE selected_issuer_ids AS
             SELECT DISTINCT issuer_id
             FROM source_db.instrument
-            WHERE COALESCE(universe_mvp_flag, 0) = 1
+            WHERE instrument_id IN (SELECT instrument_id FROM selected_instrument_ids)
               AND issuer_id IS NOT NULL
             """
         )

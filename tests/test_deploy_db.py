@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 
-from etf_app.api import get_completeness_snapshot, get_custom_strategy_snapshot, list_filter_options, list_funds, open_read_conn
+from etf_app.api import get_completeness_snapshot, get_custom_strategy_snapshot, get_strategy_snapshot, list_filter_options, list_funds, open_read_conn
 from etf_app.deploy_db import build_deploy_db
 from etf_app.profile import ensure_instrument_cost_current_view, ensure_product_profile_schema
 from etf_app.taxonomy import ensure_taxonomy_schema
@@ -61,6 +61,7 @@ def make_source_db(tmp_path) -> str:
         [
             (1, "Vanguard", "Vanguard"),
             (2, "State Street", "State Street / SPDR"),
+            (3, "WisdomTree", "WisdomTree"),
         ],
     )
     conn.executemany(
@@ -76,6 +77,7 @@ def make_source_db(tmp_path) -> str:
             (2, "IE000SCVAL01", "Global Small Cap Value UCITS ETF", "ETF", 1, 1),
             (3, "IE000SHBND01", "USD Treasury 1-3 UCITS ETF", "ETF", 2, 1),
             (4, "IE000EXTRA01", "Excluded Fund UCITS ETF", "ETF", 2, 0),
+            (5, "JE00WGLD0001", "WisdomTree Core Physical Gold", "ETC", 3, 0),
         ],
     )
     conn.executemany(
@@ -90,6 +92,7 @@ def make_source_db(tmp_path) -> str:
             (2, 2, "XETR", "GSCV", "USD"),
             (3, 3, "XLON", "USTS", "USD"),
             (4, 4, "XLON", "XTRA", "USD"),
+            (5, 5, "XLON", "WGLD", "USD"),
         ],
     )
     conn.executemany(
@@ -107,6 +110,7 @@ def make_source_db(tmp_path) -> str:
             (2, "Accumulating", 0.25, "MSCI World Small Cap Value", "equity", "Ireland", 420000000.0, "USD", "2026-03-08"),
             (3, "Accumulating", 0.10, "US Treasury 1-3", "bond", "Ireland", 650000000.0, "USD", "2026-03-08"),
             (4, "Distributing", 0.35, "Excluded Index", "equity", "Ireland", 100000000.0, "USD", "2026-03-08"),
+            (5, None, 0.15, "Physical Gold", "commodity", "Jersey", 250000000.0, "USD", "2026-03-08"),
         ],
     )
     conn.executemany(
@@ -122,6 +126,7 @@ def make_source_db(tmp_path) -> str:
             (3, 2, "2026-03-08", 0.25, "ok"),
             (4, 3, "2026-03-08", 0.10, "ok"),
             (5, 4, "2026-03-08", 0.35, "ok"),
+            (6, 5, "2026-03-08", 0.15, "ok"),
         ],
     )
     conn.executemany(
@@ -153,12 +158,12 @@ def test_build_deploy_db_preserves_runtime_queries(tmp_path) -> None:
 
     stats = build_deploy_db(source_db_path=source_db, output_db_path=str(output_db))
 
-    assert stats.instrument_rows == 3
-    assert stats.issuer_rows == 2
-    assert stats.listing_rows == 3
-    assert stats.product_profile_rows == 3
+    assert stats.instrument_rows == 4
+    assert stats.issuer_rows == 3
+    assert stats.listing_rows == 4
+    assert stats.product_profile_rows == 4
     assert stats.instrument_taxonomy_rows == 3
-    assert stats.cost_snapshot_rows == 3
+    assert stats.cost_snapshot_rows == 4
     assert stats.output_size_bytes <= stats.source_size_bytes
 
     source_conn = open_read_conn(source_db)
@@ -193,6 +198,28 @@ def test_build_deploy_db_preserves_runtime_queries(tmp_path) -> None:
             ],
         )
         assert source_strategy == deploy_strategy
+
+        source_gold_strategy = get_strategy_snapshot(
+            source_conn,
+            venue="ALL",
+            preferred_currency_order="USD,EUR,GBP",
+            top_n=5,
+            allow_missing_fees=False,
+            allow_missing_currency=False,
+            strategy_name="Harry Browne Permanent Portfolio",
+        )
+        deploy_gold_strategy = get_strategy_snapshot(
+            deploy_conn,
+            venue="ALL",
+            preferred_currency_order="USD,EUR,GBP",
+            top_n=5,
+            allow_missing_fees=False,
+            allow_missing_currency=False,
+            strategy_name="Harry Browne Permanent Portfolio",
+        )
+        assert source_gold_strategy == deploy_gold_strategy
+        gold_rows = [row for row in deploy_gold_strategy["strategies"][0]["rows"] if row["bucket_name"] == "gold"]
+        assert [row["ticker"] for row in gold_rows] == ["WGLD"]
 
         source_coverage = get_completeness_snapshot(
             source_conn,
