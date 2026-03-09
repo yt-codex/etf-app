@@ -12,6 +12,7 @@ from pathlib import Path
 from etf_app.avantis_kid_enrich import (
     AVANTIS_ISSUER_NORMALIZED,
     HttpClient,
+    backfill_listing_aliases_from_fund_page,
     discover_fund_pages,
     download_pdf_with_cache,
     ensure_column,
@@ -106,6 +107,7 @@ def main(argv: list[str]) -> int:
     isins_parsed = 0
     instrument_inserted = 0
     listing_missing = 0
+    listing_aliases_written = 0
     sample_created: list[str] = []
 
     try:
@@ -151,6 +153,12 @@ def main(argv: list[str]) -> int:
                     instrument_name=name,
                     issuer_id=issuer_id,
                 )
+                listing_aliases_written += backfill_listing_aliases_from_fund_page(
+                    conn,
+                    instrument_id=instrument_id,
+                    html=page.text or "",
+                    asof_date=now_utc_iso()[:10],
+                )
                 if inserted:
                     instrument_inserted += 1
                     if len(sample_created) < 10:
@@ -173,6 +181,7 @@ def main(argv: list[str]) -> int:
     print(f"isins_parsed: {isins_parsed}")
     print(f"instrument_inserted: {instrument_inserted}")
     print(f"instruments_without_listing: {listing_missing}")
+    print(f"listing_aliases_written: {listing_aliases_written}")
     print("\nSample inserted ISINs (up to 10):")
     if not sample_created:
         print("None")

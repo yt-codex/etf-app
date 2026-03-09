@@ -85,14 +85,15 @@ def make_api_db(tmp_path) -> str:
         INSERT INTO listing(
             listing_id, instrument_id, primary_flag, status, venue_mic, ticker, trading_currency
         )
-        VALUES (?, ?, 1, 'active', ?, ?, ?)
+        VALUES (?, ?, ?, 'active', ?, ?, ?)
         """,
         [
-            (1, 1, "XLON", "VWLD", "GBP"),
-            (2, 2, "XETR", "GSCV", "USD"),
-            (3, 3, "XLON", "EGLB", "EUR"),
-            (4, 4, "XETR", "USTS", "USD"),
-            (5, 5, "XLON", "PHGL", "USD"),
+            (1, 1, 1, "XLON", "VWLD", "GBP"),
+            (2, 2, 1, "XETR", "GSCV", "USD"),
+            (3, 3, 1, "XLON", "EGLB", "EUR"),
+            (4, 4, 1, "XETR", "USTS", "USD"),
+            (5, 5, 1, "XLON", "PHGL", "USD"),
+            (6, 2, 0, "XLON", "AVGS", "USD"),
         ],
     )
     conn.executemany(
@@ -209,6 +210,14 @@ def test_list_funds_supports_filters_sort_and_pagination(tmp_path) -> None:
         params={"fee_min": "0.20", "fee_max": "0.25", "sort": "fee", "direction": "asc", "limit": "10", "offset": "0"},
     )
     assert [item["isin"] for item in ter_payload["items"]] == ["IE000LGBND01", "IE000SCVAL01"]
+
+    alias_search_payload = list_funds(
+        conn,
+        params={"q": "AVGS", "limit": "10", "offset": "0"},
+    )
+    assert alias_search_payload["total"] == 1
+    assert alias_search_payload["items"][0]["isin"] == "IE000SCVAL01"
+    assert alias_search_payload["items"][0]["ticker"] == "GSCV"
 
 
 def test_get_fund_detail_includes_taxonomy_evidence(tmp_path) -> None:
@@ -332,7 +341,7 @@ def test_list_filter_options_returns_all_issuers_not_just_top_25(tmp_path) -> No
                 idx,
             )
         )
-        listing_rows.append((idx, idx, "XLON", f"X{idx:02d}", "USD"))
+        listing_rows.append((100 + idx, idx, "XLON", f"X{idx:02d}", "USD"))
         profile_rows.append(
             (
                 idx,

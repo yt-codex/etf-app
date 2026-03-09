@@ -85,14 +85,15 @@ def make_source_db(tmp_path) -> str:
         INSERT INTO listing(
             listing_id, instrument_id, primary_flag, status, venue_mic, ticker, trading_currency
         )
-        VALUES (?, ?, 1, 'active', ?, ?, ?)
+        VALUES (?, ?, ?, 'active', ?, ?, ?)
         """,
         [
-            (1, 1, "XLON", "VWLD", "USD"),
-            (2, 2, "XETR", "GSCV", "USD"),
-            (3, 3, "XLON", "USTS", "USD"),
-            (4, 4, "XLON", "XTRA", "USD"),
-            (5, 5, "XLON", "WGLD", "USD"),
+            (1, 1, 1, "XLON", "VWLD", "USD"),
+            (2, 2, 1, "XETR", "GSCV", "USD"),
+            (3, 3, 1, "XLON", "USTS", "USD"),
+            (4, 4, 1, "XLON", "XTRA", "USD"),
+            (5, 5, 1, "XLON", "WGLD", "USD"),
+            (6, 2, 0, "XLON", "AVGS", "USD"),
         ],
     )
     conn.executemany(
@@ -160,7 +161,7 @@ def test_build_deploy_db_preserves_runtime_queries(tmp_path) -> None:
 
     assert stats.instrument_rows == 4
     assert stats.issuer_rows == 3
-    assert stats.listing_rows == 4
+    assert stats.listing_rows == 5
     assert stats.product_profile_rows == 4
     assert stats.instrument_taxonomy_rows == 3
     assert stats.cost_snapshot_rows == 4
@@ -171,6 +172,8 @@ def test_build_deploy_db_preserves_runtime_queries(tmp_path) -> None:
     try:
         params = {"limit": "50", "offset": "0", "sort": "name", "direction": "asc"}
         assert list_funds(source_conn, params=params) == list_funds(deploy_conn, params=params)
+        alias_params = {"limit": "50", "offset": "0", "sort": "name", "direction": "asc", "q": "AVGS"}
+        assert list_funds(source_conn, params=alias_params) == list_funds(deploy_conn, params=alias_params)
         assert list_filter_options(source_conn) == list_filter_options(deploy_conn)
 
         source_strategy = get_custom_strategy_snapshot(

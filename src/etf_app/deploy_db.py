@@ -179,7 +179,6 @@ def build_deploy_db(*, source_db_path: str, output_db_path: str) -> DeployDbStat
             SELECT *
             FROM source_db.listing
             WHERE instrument_id IN (SELECT instrument_id FROM selected_instrument_ids)
-              AND COALESCE(primary_flag, 0) = 1
               AND COALESCE(status, 'active') = 'active'
             """
         )

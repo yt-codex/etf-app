@@ -32,6 +32,11 @@ SOURCE_NAME = "avantis_kid"
 AVANTIS_LANDING_URL = "https://www.avantisinvestors.com/ucitsetf/"
 AVANTIS_ISSUER_NORMALIZED = "Avantis / American Century ICAV"
 AVANTIS_ISSUER_DOMAIN = "avantisinvestors.com"
+AVANTIS_LISTING_SOURCE = "AVANTIS_FUND_PAGE"
+AVANTIS_VENUE_BY_EXCHANGE = {
+    "london stock exchange": ("XLON", "London Stock Exchange"),
+    "xetra": ("XETR", "Deutsche Boerse Xetra"),
+}
 
 # Deterministic fallback when the landing page does not enumerate funds.
 FALLBACK_FUND_PAGES = [
@@ -356,6 +361,41 @@ def extract_kid_url_from_fund_page(html: str) -> Optional[str]:
     return None
 
 
+def extract_listing_rows_from_fund_page(html: str) -> list[dict[str, str]]:
+    out: list[dict[str, str]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for exchange_key, venue_info in AVANTIS_VENUE_BY_EXCHANGE.items():
+        exchange_name_pattern = re.compile(rf'value:"{re.escape(exchange_key)}"', flags=re.IGNORECASE)
+        for match in exchange_name_pattern.finditer(html):
+            prefix = html[max(0, match.start() - 400) : match.start()]
+            if 'nodeType:"table-row"' not in prefix:
+                continue
+            tail = html[match.end() : match.end() + 1200]
+            values = re.findall(r'value:"([^"]+)"', tail)
+            if len(values) < 2:
+                continue
+            ticker = normalize_space(values[0]).upper()
+            currency = normalize_space(values[1]).upper()
+            if not re.fullmatch(r"[A-Z0-9]{2,8}", ticker):
+                continue
+            if not re.fullmatch(r"[A-Z]{3}", currency):
+                continue
+            venue_mic, exchange_name = venue_info
+            signature = (venue_mic, ticker, currency)
+            if signature in seen:
+                continue
+            seen.add(signature)
+            out.append(
+                {
+                    "venue_mic": venue_mic,
+                    "exchange_name": exchange_name,
+                    "ticker": ticker,
+                    "trading_currency": currency,
+                }
+            )
+    return out
+
+
 def is_pdf_content(content_type: Optional[str], final_url: Optional[str], content: bytes) -> bool:
     ctype = (content_type or "").lower()
     if "pdf" in ctype:
@@ -587,6 +627,98 @@ def upsert_url_map(conn: sqlite3.Connection, instrument_id: int, url_type: str, 
         """,
         (instrument_id, url_type, url),
     )
+
+
+def upsert_listing_alias(
+    conn: sqlite3.Connection,
+    *,
+    instrument_id: int,
+    venue_mic: str,
+    exchange_name: str,
+    ticker: str,
+    trading_currency: str,
+    asof_date: str,
+) -> int:
+    row = conn.execute(
+        """
+        SELECT listing_id, exchange_name, trading_currency, primary_flag, status, data_source, asof_date
+        FROM listing
+        WHERE instrument_id = ? AND venue_mic = ? AND ticker = ?
+        """,
+        (instrument_id, venue_mic, ticker),
+    ).fetchone()
+    if row is None:
+        conn.execute(
+            """
+            INSERT INTO listing(
+                instrument_id, venue_mic, exchange_name, ticker, trading_currency,
+                primary_flag, status, data_source, asof_date
+            ) VALUES (?, ?, ?, ?, ?, 0, 'active', ?, ?)
+            """,
+            (instrument_id, venue_mic, exchange_name, ticker, trading_currency, AVANTIS_LISTING_SOURCE, asof_date),
+        )
+        return 1
+
+    next_exchange_name = str(row["exchange_name"] or "") or exchange_name
+    next_currency = str(row["trading_currency"] or "") or trading_currency
+    next_primary_flag = int(row["primary_flag"] or 0)
+    next_status = "active"
+    next_source = str(row["data_source"] or "") or AVANTIS_LISTING_SOURCE
+    next_asof = asof_date if row["status"] != "active" or not row["asof_date"] else str(row["asof_date"])
+    changed = (
+        next_exchange_name != row["exchange_name"]
+        or next_currency != row["trading_currency"]
+        or next_primary_flag != int(row["primary_flag"] or 0)
+        or next_status != row["status"]
+        or next_source != row["data_source"]
+        or next_asof != row["asof_date"]
+    )
+    if not changed:
+        return 0
+    conn.execute(
+        """
+        UPDATE listing
+        SET exchange_name = ?,
+            trading_currency = ?,
+            primary_flag = ?,
+            status = ?,
+            data_source = ?,
+            asof_date = ?
+        WHERE listing_id = ?
+        """,
+        (
+            next_exchange_name,
+            next_currency,
+            next_primary_flag,
+            next_status,
+            next_source,
+            next_asof,
+            int(row["listing_id"]),
+        ),
+    )
+    return 1
+
+
+def backfill_listing_aliases_from_fund_page(
+    conn: sqlite3.Connection,
+    *,
+    instrument_id: int,
+    html: str,
+    asof_date: str,
+) -> int:
+    rows = extract_listing_rows_from_fund_page(html)
+    changed = 0
+    for row in rows:
+        changed += upsert_listing_alias(
+            conn,
+            instrument_id=instrument_id,
+            venue_mic=row["venue_mic"],
+            exchange_name=row["exchange_name"],
+            ticker=row["ticker"],
+            trading_currency=row["trading_currency"],
+            asof_date=asof_date,
+        )
+    return changed
 
 
 def upsert_avantis_issuer(conn: sqlite3.Connection) -> int:
@@ -835,6 +967,7 @@ def main(argv: list[str]) -> int:
     fees_parsed = 0
     costs_written = 0
     issuer_backfilled = 0
+    listing_aliases_written = 0
     samples: list[tuple[str, str, str, float]] = []
 
     try:
@@ -908,6 +1041,12 @@ def main(argv: list[str]) -> int:
                 continue
             instrument_id = int(instrument["instrument_id"])
             ticker = normalize_space(str(instrument["ticker"] or ""))
+            listing_aliases_written += backfill_listing_aliases_from_fund_page(
+                conn,
+                instrument_id=instrument_id,
+                html=html,
+                asof_date=asof_date,
+            )
 
             upsert_url_map(conn, instrument_id, "avantis_fund_page", fund_url)
             upsert_url_map(conn, instrument_id, "avantis_kid_pdf", kid_url)
@@ -988,7 +1127,8 @@ def main(argv: list[str]) -> int:
             if idx % 10 == 0:
                 log(
                     f"processed={idx}/{funds_discovered} "
-                    f"kids_downloaded={kids_downloaded} fees_parsed={fees_parsed} costs_written={costs_written}"
+                    f"kids_downloaded={kids_downloaded} fees_parsed={fees_parsed} "
+                    f"costs_written={costs_written} listing_aliases_written={listing_aliases_written}"
                 )
 
         conn.commit()
@@ -1006,6 +1146,7 @@ def main(argv: list[str]) -> int:
         issuer_backfilled=issuer_backfilled,
         samples=samples,
     )
+    print(f"listing_aliases_written: {listing_aliases_written}")
     return 0
 
 
