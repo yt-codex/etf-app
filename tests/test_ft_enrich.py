@@ -58,6 +58,23 @@ SHARE_CLASS_SIZE_SUMMARY_HTML = """
 """
 
 
+OBJECTIVE_FALLBACK_SUMMARY_HTML = """
+<div class="mod-tearsheet-overview__header__name">Avantis America Equity UCITS ETF USD Acc</div>
+<div class="mod-aside__module">
+  <h2 class="mod-ui-header--event o-teaser-collection__heading o-teaser-collection__heading--full-width">Objective</h2>
+  <div>The investment objective of Avantis America Equity UCITS ETF (the "Fund") is to seek long-term capital appreciation through investment in an actively managed portfolio of equity and equity-related securities issued by large, mid and small capitalisation companies located predominantly in the US, with limited exposure to issuers in Canada.</div>
+</div>
+<table class="mod-ui-table mod-ui-table--two-column mod-profile-and-investment-app__table--profile">
+  <tr><th>Income treatment</th><td>Accumulation</td></tr>
+  <tr><th>Domicile</th><td>Ireland</td></tr>
+  <tr><th>ISIN</th><td>IE000OW54ZX1</td></tr>
+</table>
+<table class="mod-ui-table mod-ui-table--two-column mod-profile-and-investment-app__table--invest">
+  <tr><th>Fund size</th><td><div>2.25m <span class="mod-format__currency">GBP</span><span class="disclaimer"><br/>As of Feb 28 2026</span></div></td></tr>
+</table>
+"""
+
+
 SEARCH_HTML = """
 <div class="search-results">
   <a href="/data/etfs/tearsheet/summary?s=SXR8:GER:EUR">iShares Core S&amp;P 500 UCITS ETF USD (Acc)</a>
@@ -197,6 +214,17 @@ def test_parse_ft_summary_html_falls_back_to_share_class_size_and_variant_labels
     assert parsed["fund_size_asof"] == "2026-02-28"
     assert parsed["fund_size_scope"] == "share_class"
     assert parsed["equity_size_hint"] == "large"
+    assert parsed["equity_style_hint"] == "blend"
+
+
+def test_parse_ft_summary_html_can_fall_back_to_objective_for_all_cap_blend() -> None:
+    parsed = ft_enrich.parse_ft_summary_html(OBJECTIVE_FALLBACK_SUMMARY_HTML)
+
+    assert parsed["isin"] == "IE000OW54ZX1"
+    assert parsed["fund_size_value"] == 2_250_000.0
+    assert parsed["fund_size_currency"] == "GBP"
+    assert parsed["fund_size_scope"] == "fund"
+    assert parsed["equity_size_hint"] == "all_cap"
     assert parsed["equity_style_hint"] == "blend"
 
 

@@ -303,3 +303,121 @@ def test_health_and_fund_detail_routes(tmp_path) -> None:
     status, _headers, payload = call_json(app, "/api/funds/UNKNOWN")
     assert status == "404 Not Found"
     assert payload["error"] == "fund_not_found"
+
+
+def test_list_filter_options_returns_all_issuers_not_just_top_25(tmp_path) -> None:
+    db_path = make_api_db(tmp_path)
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    issuer_rows = []
+    instrument_rows = []
+    listing_rows = []
+    profile_rows = []
+    taxonomy_rows = []
+    cost_rows = []
+    for idx in range(6, 36):
+        issuer_rows.append((idx, f"Issuer {idx:02d}", f"Issuer {idx:02d}"))
+        instrument_rows.append(
+            (
+                idx,
+                f"IE000EXTRA{idx:02d}",
+                f"Extra Fund {idx:02d}",
+                "ETF",
+                idx,
+            )
+        )
+        listing_rows.append((idx, idx, "XLON", f"X{idx:02d}", "USD"))
+        profile_rows.append(
+            (
+                idx,
+                "Accumulating",
+                1,
+                "issuer_metadata_snapshot",
+                0.2,
+                f"Benchmark {idx:02d}",
+                "equity",
+                "Ireland",
+                10_000_000.0 + idx,
+                "USD",
+                "2026-03-06",
+                "fund",
+                "physical",
+                None,
+                None,
+            )
+        )
+        taxonomy_rows.append(
+            (
+                idx,
+                "equity",
+                "global",
+                "global",
+                None,
+                "large",
+                "blend",
+                json.dumps({"rules": ["test"]}),
+            )
+        )
+        cost_rows.append((idx, 0.2))
+    conn.executemany("INSERT INTO issuer(issuer_id, issuer_name, normalized_name) VALUES (?, ?, ?)", issuer_rows)
+    conn.executemany(
+        """
+        INSERT INTO instrument(
+            instrument_id, isin, instrument_name, instrument_type, issuer_id,
+            universe_mvp_flag, leverage_flag, inverse_flag, ucits_flag, ucits_source, status
+        )
+        VALUES (?, ?, ?, ?, ?, 1, 0, 0, 1, 'issuer_metadata_snapshot', 'active')
+        """,
+        instrument_rows,
+    )
+    conn.executemany(
+        """
+        INSERT INTO listing(
+            listing_id, instrument_id, primary_flag, status, venue_mic, ticker, trading_currency
+        )
+        VALUES (?, ?, 1, 'active', ?, ?, ?)
+        """,
+        listing_rows,
+    )
+    conn.executemany(
+        """
+        INSERT INTO product_profile(
+            instrument_id, distribution_policy, ucits_flag, ucits_source, ucits_updated_at,
+            ongoing_charges, ongoing_charges_asof, benchmark_name, asset_class_hint, domicile_country,
+            fund_size_value, fund_size_currency, fund_size_asof, fund_size_scope,
+            replication_method, hedged_flag, hedged_target, updated_at
+        )
+        VALUES (?, ?, ?, ?, '2026-03-07', ?, '2026-03-07', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '2026-03-07T00:00:00Z')
+        """,
+        profile_rows,
+    )
+    conn.executemany(
+        """
+        INSERT INTO instrument_taxonomy(
+            instrument_id, asset_class, geography_scope, geography_region, geography_country,
+            equity_size, equity_style, factor, sector, theme, bond_type, duration_bucket,
+            duration_years_low, duration_years_high, commodity_type, cash_proxy_flag, gold_flag,
+            cash_flag, govt_bond_flag, hedged_flag, hedged_target, domicile_country,
+            distribution_policy, taxonomy_version, evidence_json, updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, NULL, NULL, NULL, 'unknown', 0, 0, 0, 0, 0, NULL, 'Ireland', 'Accumulating', 'taxonomy_v2', ?, '2026-03-07T00:00:00Z')
+        """,
+        taxonomy_rows,
+    )
+    conn.executemany(
+        """
+        INSERT INTO cost_snapshot(
+            instrument_id, asof_date, ongoing_charges, quality_flag, raw_json
+        )
+        VALUES (?, '2026-03-07', ?, 'ok', '{}')
+        """,
+        cost_rows,
+    )
+    conn.commit()
+
+    filters_payload = list_filter_options(conn)
+    conn.close()
+
+    issuer_values = [item["value"] for item in filters_payload["issuer_top"]]
+    assert len(issuer_values) >= 33
+    assert "Issuer 35" in issuer_values

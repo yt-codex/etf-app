@@ -463,7 +463,6 @@ def list_filter_options(conn: sqlite3.Connection) -> dict[str, object]:
             conn,
             expression="COALESCE(iss.normalized_name, iss.issuer_name, 'Unknown')",
             where="COALESCE(iss.normalized_name, iss.issuer_name, 'Unknown') <> ''",
-            limit=25,
         ),
         "hedged_flag": hedged_counts,
         "sector_blank_count": blank_sector_count,

@@ -608,6 +608,36 @@ def normalize_equity_style(value: str) -> Optional[str]:
     return text
 
 
+def parse_objective_equity_hints(objective_text: str) -> dict[str, Optional[str]]:
+    normalized = normalize_space(objective_text)
+    lower_text = normalized.lower()
+    if not lower_text:
+        return {"equity_size_hint": None, "equity_style_hint": None}
+
+    size_hint: Optional[str] = None
+    style_hint: Optional[str] = None
+
+    if re.search(r"\blarge\b", lower_text) and re.search(r"\bmid\b", lower_text) and re.search(r"\bsmall\b", lower_text):
+        size_hint = "all_cap"
+    elif re.search(r"\blarge(?:[-\s]+cap(?:itali[sz]ation)?)?\b", lower_text):
+        size_hint = "large"
+    elif re.search(r"\bmid(?:[-\s]+cap(?:itali[sz]ation)?)?\b", lower_text):
+        size_hint = "mid"
+    elif re.search(r"\bsmall(?:[-\s]+cap(?:itali[sz]ation)?)?\b", lower_text):
+        size_hint = "small"
+
+    if "value" in lower_text:
+        style_hint = "value"
+    elif "growth" in lower_text:
+        style_hint = "growth"
+    elif "blend" in lower_text or "core" in lower_text:
+        style_hint = "blend"
+    elif size_hint == "all_cap":
+        style_hint = "blend"
+
+    return {"equity_size_hint": size_hint, "equity_style_hint": style_hint}
+
+
 def normalize_sector_name(value: str) -> Optional[str]:
     text = normalize_space(value)
     if not text or text == "--" or text.lower() == "other":
@@ -805,6 +835,12 @@ def parse_ft_summary_html(html: str) -> dict[str, object]:
             equity_size_hint = normalize_equity_size(flat_style_text)
         if equity_style_hint is None:
             equity_style_hint = normalize_equity_style(flat_style_text)
+    if equity_size_hint is None or equity_style_hint is None:
+        objective_hints = parse_objective_equity_hints(objective_text or "")
+        if equity_size_hint is None:
+            equity_size_hint = objective_hints["equity_size_hint"]
+        if equity_style_hint is None:
+            equity_style_hint = objective_hints["equity_style_hint"]
 
     fund_size_value: Optional[float] = None
     fund_size_currency: Optional[str] = None

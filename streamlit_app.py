@@ -49,7 +49,7 @@ REGION_LABELS = {
     "latin_america": "Latin America",
     "north_america": "North America",
 }
-SIZE_LABELS = {"large": "Large", "mid": "Mid", "small": "Small"}
+SIZE_LABELS = {"large": "Large", "mid": "Mid", "small": "Small", "all_cap": "All cap"}
 STYLE_LABELS = {"value": "Value", "growth": "Growth", "blend": "Blend"}
 REPLICATION_LABELS = {"physical": "Physical", "synthetic": "Synthetic"}
 BOND_TYPE_LABELS = {

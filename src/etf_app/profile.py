@@ -411,6 +411,8 @@ def _normalize_equity_size_hint(value: object) -> Optional[str]:
     if not text:
         return None
     upper = text.upper()
+    if "ALL CAP" in upper or "ALL_CAP" in upper:
+        return "all_cap"
     if "LARGE" in upper or "GIANT" in upper:
         return "large"
     if "MID" in upper or "MEDIUM" in upper:

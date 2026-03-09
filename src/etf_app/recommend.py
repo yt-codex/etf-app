@@ -727,7 +727,7 @@ def is_core_global_equity(row: dict[str, object], *, allow_factor: bool) -> tupl
         return True, reasons
     if row.get("factor"):
         return False, []
-    if equity_size and equity_size != "large":
+    if equity_size and equity_size not in {"large", "all_cap"}:
         return False, []
     if equity_style and equity_style != "blend":
         return False, []
@@ -800,7 +800,7 @@ def match_generic_bucket(spec: BucketSpec, row: dict[str, object]) -> tuple[bool
             return False, []
         if spec.equity_style and equity_style != spec.equity_style:
             return False, []
-        if not spec.equity_size and equity_size and equity_size != "large":
+        if not spec.equity_size and equity_size and equity_size not in {"large", "all_cap"}:
             return False, []
         if not spec.equity_style and equity_style and equity_style != "blend":
             return False, []
@@ -913,7 +913,7 @@ def bucket_preference(bucket_name: str, row: dict[str, object]) -> int:
         if spec.sector is None:
             if has_non_core_global_modifier(str(row.get("instrument_name") or "")):
                 preference += 20
-            if not spec.equity_size and str(row.get("equity_size") or "").lower() not in {"", "large"}:
+            if not spec.equity_size and str(row.get("equity_size") or "").lower() not in {"", "large", "all_cap"}:
                 preference += 8
             if not spec.equity_style and str(row.get("equity_style") or "").lower() not in {"", "blend"}:
                 preference += 8

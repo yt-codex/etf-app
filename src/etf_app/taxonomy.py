@@ -297,6 +297,8 @@ def _normalize_equity_size_hint(value: str | None) -> Optional[str]:
     text = str(value or "").strip().lower()
     if not text:
         return None
+    if "all_cap" in text or "all cap" in text:
+        return "all_cap"
     if "large" in text or "giant" in text:
         return "large"
     if "mid" in text or "medium" in text:

@@ -124,6 +124,22 @@ def test_generic_equity_bucket_matches_plain_vanilla_us_large_value() -> None:
     ]
 
 
+def test_equity_global_accepts_all_cap_blend_core_market_fund() -> None:
+    ok, reasons = match_bucket(
+        "equity_global",
+        make_row(
+            instrument_name="Avantis America Equity UCITS ETF",
+            geography_scope="global",
+            geography_region="global",
+            equity_size="all_cap",
+            equity_style="blend",
+        ),
+    )
+
+    assert ok is True
+    assert reasons == ["asset_class=equity", "geography_region=global", "core_scope=global"]
+
+
 def test_generic_commodity_bucket_allows_broad_commodities() -> None:
     ok, reasons = match_bucket(
         "broad_commodities",
